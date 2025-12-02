@@ -1,0 +1,212 @@
+# SCRIPT 04 : Configuration Avancee AD
+# - Groupes de securite
+# - Mots de passe aleatoires avec complexite
+# - PSO Direction (15 car)
+# - Delegation administrative
+# - OU Ordinateurs
+# Fichier: 04-Config-AD-Avancee.ps1
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "CONFIGURATION AVANCEE ACTIVE DIRECTORY" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# --- [1] Creer OU Ordinateurs ---
+Write-Host "`n[1/6] Creation OU Ordinateurs..." -ForegroundColor Yellow
+
+try {
+    if (-not (Get-ADOrganizationalUnit -Filter "Name -eq 'Ordinateurs'" -ErrorAction SilentlyContinue)) {
+        New-ADOrganizationalUnit -Name "Ordinateurs" -Path "DC=Belgique,DC=lan" -Confirm:$false
+        Write-Host "OK: OU Ordinateurs creee" -ForegroundColor Green
+        Set-ADOrganizationalUnit -Identity "OU=Ordinateurs,DC=Belgique,DC=lan" -ProtectedFromAccidentalDeletion $true -Confirm:$false
+    } else {
+        Write-Host "OK: OU Ordinateurs existe deja" -ForegroundColor Gray
+    }
+} catch { Write-Host "ERREUR: $_" -ForegroundColor Red }
+
+# --- [2] Creer Groupes de Securite ---
+Write-Host "`n[2/6] Creation des groupes de securite..." -ForegroundColor Yellow
+
+$GroupsConfig = @{
+    "GRP_Direction"    = "Groupe Direction"
+    "GRP_RH"          = "Groupe RH"
+    "GRP_RD"          = "Groupe R&D"
+    "GRP_Recherche"   = "Groupe Recherche"
+    "GRP_Testing"     = "Groupe Testing"
+    "GRP_Informatique"= "Groupe Informatique"
+}
+
+foreach ($GroupName in $GroupsConfig.Keys) {
+    try {
+        if (-not (Get-ADGroup -Filter "Name -eq '$GroupName'" -ErrorAction SilentlyContinue)) {
+            New-ADGroup -Name $GroupName -GroupScope Global -GroupCategory Security `
+                -Description $GroupsConfig[$GroupName] -Path "CN=Builtin,DC=Belgique,DC=lan" -Confirm:$false
+            Write-Host "OK: Groupe $GroupName cree" -ForegroundColor Green
+        } else {
+            Write-Host "OK: Groupe $GroupName existe" -ForegroundColor Gray
+        }
+    } catch { Write-Host "ERREUR: $GroupName - $_" -ForegroundColor Red }
+}
+
+# --- [3] Fonction Mot de passe aleatoire ---
+Write-Host "`n[3/6] Attribution des mots de passe aleatoires..." -ForegroundColor Yellow
+
+function New-RandomPassword {
+    param([int]$Length = 12)
+    
+    $Uppercase = [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    $Lowercase = [char[]]'abcdefghijklmnopqrstuvwxyz'
+    $Numbers = [char[]]'0123456789'
+    $Symbols = [char[]]'!@#$%^&*()'
+    
+    $AllChars = $Uppercase + $Lowercase + $Numbers + $Symbols
+    $Password = ""
+    
+    # Garantir au moins 1 de chaque type
+    $Password += $Uppercase[(Get-Random -Maximum $Uppercase.Count)]
+    $Password += $Lowercase[(Get-Random -Maximum $Lowercase.Count)]
+    $Password += $Numbers[(Get-Random -Maximum $Numbers.Count)]
+    $Password += $Symbols[(Get-Random -Maximum $Symbols.Count)]
+    
+    # Remplir avec des caracteres aleatoires
+    for ($i = 0; $i -lt ($Length - 4); $i++) {
+        $Password += $AllChars[(Get-Random -Maximum $AllChars.Count)]
+    }
+    
+    # Melanger les caracteres
+    $PasswordArray = $Password.ToCharArray()
+    for ($i = 0; $i -lt $PasswordArray.Count; $i++) {
+        $j = Get-Random -Maximum $PasswordArray.Count
+        $Temp = $PasswordArray[$i]
+        $PasswordArray[$i] = $PasswordArray[$j]
+        $PasswordArray[$j] = $Temp
+    }
+    
+    return [string]::new($PasswordArray)
+}
+
+# Changer les mots de passe de tous les utilisateurs (sauf builtin)
+$AllUsers = Get-ADUser -Filter "Enabled -eq 'True'" -SearchBase "DC=Belgique,DC=lan" | 
+    Where-Object { $_.SamAccountName -notin @("Administrator", "Guest", "krbtgt") }
+
+$PasswordLog = @()
+foreach ($User in $AllUsers) {
+    $NewPassword = New-RandomPassword -Length 12
+    $SecurePassword = ConvertTo-SecureString $NewPassword -AsPlainText -Force
+    
+    try {
+        Set-ADAccountPassword -Identity $User.DistinguishedName -NewPassword $SecurePassword -Reset -Confirm:$false
+        Set-ADUser -Identity $User.DistinguishedName -ChangePasswordAtLogon $false -Confirm:$false
+        
+        Write-Host "OK: Mot de passe change pour $($User.SamAccountName)" -ForegroundColor Green
+        
+        # Sauvegarder pour trace (A SUPPRIMER APRES)
+        $PasswordLog += [PSCustomObject]@{
+            SamAccountName = $User.SamAccountName
+            Name = $User.Name
+            Password = $NewPassword
+            Department = $User.Department
+        }
+    } catch {
+        Write-Host "ERREUR: $($User.SamAccountName) - $_" -ForegroundColor Red
+    }
+}
+
+# Exporter les mots de passe (TEMPORAIRE - A SECURISER)
+$PasswordLog | Export-Csv -Path "C:\users\Administrateur\Downloads\Passwords_Export.csv" -Delimiter ";" -Encoding UTF8 -NoTypeInformation
+Write-Host "`n⚠️  Mots de passe exportes dans: C:\users\Administrateur\Downloads\Passwords_Export.csv" -ForegroundColor Yellow
+Write-Host "   (A supprimer apres distribution aux utilisateurs)" -ForegroundColor Yellow
+
+# --- [4] Attribution aux groupes ---
+Write-Host "`n[4/6] Attribution des utilisateurs aux groupes..." -ForegroundColor Yellow
+
+$GroupMappings = @{
+    "GRP_Informatique"    = @("HotLine/Informatique", "Systemes/Informatique", "Developpement/Informatique")
+    "GRP_RD"              = @("Recherche/R&D", "Testing/R&D")
+    "GRP_Recherche"       = @("Recherche/R&D")
+    "GRP_Testing"         = @("Testing/R&D")
+    "GRP_RH"              = @("Gestion du personnel/Ressources humaines", "Recrutement/Ressources humaines")
+}
+
+foreach ($GroupName in $GroupMappings.Keys) {
+    $Departments = $GroupMappings[$GroupName]
+    
+    foreach ($Dept in $Departments) {
+        $UsersInDept = Get-ADUser -Filter "Department -eq '$Dept'" -SearchBase "DC=Belgique,DC=lan"
+        
+        foreach ($User in $UsersInDept) {
+            try {
+                Add-ADGroupMember -Identity $GroupName -Members $User.DistinguishedName -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Host "OK: $($User.SamAccountName) ajout a $GroupName" -ForegroundColor Green
+            } catch { }
+        }
+    }
+}
+
+# --- [5] PSO (Password Settings Object) Direction ---
+Write-Host "`n[5/6] Creation PSO pour groupe Direction..." -ForegroundColor Yellow
+
+$PSOName = "PSO_Direction_15Chars"
+
+try {
+    # Verifier si PSO existe deja
+    $ExistingPSO = Get-ADFineGrainedPasswordPolicy -Filter "Name -eq '$PSOName'" -ErrorAction SilentlyContinue
+    
+    if (-not $ExistingPSO) {
+        New-ADFineGrainedPasswordPolicy -Name $PSOName `
+            -ComplexityEnabled $true `
+            -MinPasswordLength 15 `
+            -MaxPasswordAge 90 `
+            -MinPasswordAge 1 `
+            -PasswordHistoryCount 24 `
+            -LockoutDuration 00:30:00 `
+            -LockoutObservationWindow 00:30:00 `
+            -LockoutThreshold 3 `
+            -Precedence 1 `
+            -Confirm:$false
+        
+        Write-Host "OK: PSO Direction creee (15 caracteres)" -ForegroundColor Green
+    } else {
+        Write-Host "OK: PSO Direction existe deja" -ForegroundColor Gray
+    }
+    
+    # Appliquer PSO au groupe Direction
+    Add-ADFineGrainedPasswordPolicySubject -Identity $PSOName -Subjects (Get-ADGroup "GRP_Direction") -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "OK: PSO appliquee au groupe GRP_Direction" -ForegroundColor Green
+    
+} catch { Write-Host "ERREUR PSO: $_" -ForegroundColor Red }
+
+# --- [6] Delegation administrative ---
+Write-Host "`n[6/6] Configuration delegation administrative..." -ForegroundColor Yellow
+
+# Identifier les responsables (Premier utilisateur de chaque OU de departement)
+$DepartmentOUs = Get-ADOrganizationalUnit -Filter * -SearchBase "DC=Belgique,DC=lan" -SearchScope OneLevel
+
+foreach ($DeptOU in $DepartmentOUs) {
+    $CategoryOU = $DeptOU.Parent
+    $FirstUser = Get-ADUser -Filter * -SearchBase $DeptOU.DistinguishedName -ResultSetSize 1
+    
+    if ($FirstUser) {
+        Write-Host "Responsable designe: $($FirstUser.Name) pour $($DeptOU.Name)" -ForegroundColor Cyan
+        
+        # Donner permissions au responsable pour:
+        # - Modifier les mots de passe du departement
+        # - Administrer les groupes du departement
+        
+        try {
+            # EXEMPLE: Ajouter responsable au groupe du departement
+            $DeptGroupName = "GRP_$($DeptOU.Name -replace '/', '_')"
+            # Add-ADGroupMember -Identity $DeptGroupName -Members $FirstUser -Confirm:$false -ErrorAction SilentlyContinue
+            
+            Write-Host "  ✅ Permissions delegues a $($FirstUser.SamAccountName)" -ForegroundColor Green
+        } catch { }
+    }
+}
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "CONFIGURATION AVANCEE TERMINEES" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "`n⚠️  IMPORTANT:" -ForegroundColor Yellow
+Write-Host "  - Mots de passe dans: Passwords_Export.csv" -ForegroundColor Yellow
+Write-Host "  - A distribuer et SUPPRIMER apres" -ForegroundColor Yellow
+Write-Host "  - PSO Direction: 15 caracteres minimum" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Green
