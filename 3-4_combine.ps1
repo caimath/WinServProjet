@@ -2,6 +2,20 @@
 # Combine : Création OUs + Utilisateurs + Mots de passe aléatoires + Délégation
 # PowerShell 5.1 COMPATIBLE
 
+Write-Host "Activation de la Corbeille AD pour la foret Belgique.lan..." -ForegroundColor Yellow
+
+try {
+    Enable-ADOptionalFeature `
+        -Identity "Recycle Bin Feature" `
+        -Scope ForestOrConfigurationSet `
+        -Target "Belgique.lan" `
+        -Confirm:$false
+
+    Write-Host "OK: Corbeille AD activee." -ForegroundColor Green
+} catch {
+    Write-Host "ERREUR activation Corbeille AD: $_" -ForegroundColor Red
+}
+
 $CSVPath = "$env:USERPROFILE\Downloads\Employes-Liste6_ADAPTEE.csv"
 
 Write-Host "========================================" -ForegroundColor Cyan
