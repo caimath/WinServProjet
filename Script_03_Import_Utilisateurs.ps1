@@ -1,11 +1,12 @@
-# SCRIPT 03 : Import Utilisateurs AVEC BUREAU, HIERARCHIE, PROTECTION ET LOGON HOURS (ANGLAIS)
+# SCRIPT 03 : Import Utilisateurs AVEC STRUCTURE AD CORRECTE
 # Fichier: 03-Import-Utilisateurs-Final.ps1
 # PowerShell 5.1 COMPATIBLE
+# Hierarchie correcte : Categorie > Sous-departement
 
 $CSVPath = "C:\users\Administrateur\Downloads\Employes-Liste6_ADAPTEE.csv"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "IMPORT DES UTILISATEURS AVEC BUREAU ET HORAIRES" -ForegroundColor Cyan
+Write-Host "IMPORT DES UTILISATEURS - HIERARCHIE CORRECTE" -ForegroundColor Cyan
 Write-Host "Domaine: Belgique.lan" -ForegroundColor Cyan
 Write-Host "Horaires: Std 6h-18h (M-F) | IT 24h/24" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
@@ -20,56 +21,103 @@ Write-Host "`n[1/5] Lecture du CSV..." -ForegroundColor Yellow
 $Users = Import-Csv -Path $CSVPath -Delimiter ";" -Encoding UTF8
 Write-Host "OK: $($Users.Count) utilisateurs a importer" -ForegroundColor Green
 
-# --- [2] Structure OUs + Protection ---
-Write-Host "`n[2/5] Creation des OUs avec hierarchie et PROTECTION..." -ForegroundColor Yellow
+# --- [2] Definition structure OUs HIERARCHIQUE ---
+Write-Host "`n[2/5] Creation de la structure hierarchique..." -ForegroundColor Yellow
 
-$Departments = @{}
-foreach ($User in $Users) {
-    $Dept = $User.Departement.Trim()
-    if ($Dept -and $Dept.Contains("/")) {
-        $Category = $Dept.Split("/")[0].Trim()
-        if (-not $Departments.ContainsKey($Category)) { $Departments[$Category] = @() }
-        if ($Departments[$Category] -notcontains $Dept) { $Departments[$Category] += $Dept }
-    }
+# Mapping exact : Categorie > Sous-departement
+$OUStructure = @{
+    "Direction"           = @()  # Aucun sous-dept, pas d'utilisateurs
+    "Technique"           = @("Achat", "Techniciens")
+    "Finances"            = @("Comptabilité", "Investissements")
+    "Informatique"        = @("Développement", "HotLine", "Systèmes")
+    "Ressources humaines" = @("Gestion du personnel", "Recrutement")
+    "R&D"                 = @("Recherche", "Testing")
+    "Commerciaux"         = @("Sédentaires", "Technico")
+    "Marketting"          = @("Site1", "Site2", "Site3", "Site4")
 }
 
-foreach ($Category in $Departments.Keys) {
+# Creer OUs Categories (niveau 1)
+foreach ($Category in $OUStructure.Keys) {
     $CategoryOUPath = "OU=$Category,DC=Belgique,DC=lan"
+    
     try {
-        if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$Category'" -ErrorAction SilentlyContinue)) {
+        if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$Category'" -SearchBase "DC=Belgique,DC=lan" -SearchScope OneLevel -ErrorAction SilentlyContinue)) {
             New-ADOrganizationalUnit -Name $Category -Path "DC=Belgique,DC=lan" -Confirm:$false
             Write-Host "OK: OU categorie creee: $Category" -ForegroundColor Green
             Set-ADOrganizationalUnit -Identity $CategoryOUPath -ProtectedFromAccidentalDeletion $true -Confirm:$false
+        } else {
+            Write-Host "OK: OU categorie existe: $Category" -ForegroundColor Gray
         }
-    } catch { Write-Host "ERREUR OU $Category: $_" -ForegroundColor Red }
-    
-    foreach ($Dept in $Departments[$Category]) {
-        $DeptOUPath = "OU=$Dept,OU=$Category,DC=Belgique,DC=lan"
-        try {
-            if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$Dept'" -ErrorAction SilentlyContinue)) {
-                New-ADOrganizationalUnit -Name $Dept -Path $CategoryOUPath -Confirm:$false
-                Write-Host "OK: OU departement creee: $Dept" -ForegroundColor Green
-                Set-ADOrganizationalUnit -Identity $DeptOUPath -ProtectedFromAccidentalDeletion $true -Confirm:$false
-            }
-        } catch { Write-Host "ERREUR OU $Dept: $_" -ForegroundColor Red }
+    } catch {
+        Write-Host "ERREUR creation OU $Category: $_" -ForegroundColor Red
     }
 }
 
-# --- [3] Creation Users ---
-Write-Host "`n[3/5] Creation des utilisateurs..." -ForegroundColor Yellow
+# Creer OUs Sous-departements (niveau 2)
+foreach ($Category in $OUStructure.Keys) {
+    $SubDepts = $OUStructure[$Category]
+    $CategoryOUPath = "OU=$Category,DC=Belgique,DC=lan"
+    
+    foreach ($SubDept in $SubDepts) {
+        $SubOUPath = "OU=$SubDept,OU=$Category,DC=Belgique,DC=lan"
+        
+        try {
+            # Verifier que le sous-dept n'existe pas
+            if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$SubDept'" -SearchBase $CategoryOUPath -ErrorAction SilentlyContinue)) {
+                New-ADOrganizationalUnit -Name $SubDept -Path $CategoryOUPath -Confirm:$false
+                Write-Host "  OK: OU sous-dept creee: $Category > $SubDept" -ForegroundColor Green
+                Set-ADOrganizationalUnit -Identity $SubOUPath -ProtectedFromAccidentalDeletion $true -Confirm:$false
+            } else {
+                Write-Host "  OK: OU sous-dept existe: $Category > $SubDept" -ForegroundColor Gray
+            }
+        } catch {
+            Write-Host "  ERREUR creation OU $SubDept: $_" -ForegroundColor Red
+        }
+    }
+}
+
+# --- [3] Mapping CSV > OUs ---
+Write-Host "`n[3/5] Mapping utilisateurs vers OUs..." -ForegroundColor Yellow
+
+# Creer mapping dynamique depuis CSV pour retrouver la categorie
+$DepartementToOUPath = @{}
+foreach ($User in $Users) {
+    $CSVDept = $User.Departement.Trim()  # Ex: "Achat/Technique"
+    
+    if ($CSVDept.Contains("/")) {
+        $Parts = $CSVDept.Split("/")
+        $SubDept = $Parts[0].Trim()
+        $Category = $Parts[1].Trim()
+        $OUPath = "OU=$SubDept,OU=$Category,DC=Belgique,DC=lan"
+    } else {
+        # Fallback si format non standard
+        $OUPath = "OU=Default,DC=Belgique,DC=lan"
+    }
+    
+    if (-not $DepartementToOUPath.ContainsKey($CSVDept)) {
+        $DepartementToOUPath[$CSVDept] = $OUPath
+    }
+}
+
+Write-Host "OK: Mapping cree pour $($DepartementToOUPath.Count) departements" -ForegroundColor Green
+
+# --- [4] Creation Users ---
+Write-Host "`n[4/5] Creation des utilisateurs..." -ForegroundColor Yellow
 
 $UserCount = 0
 $ErrorCount = 0
 $UsedAccounts = @{}
-$InfoOUs = @("HotLine/Informatique", "Systemes/Informatique", "Developpement/Informatique")
+$InfoOUs = @("Développement", "HotLine", "Systèmes")  # Sous-depts IT
 
 foreach ($User in $Users) {
-    # Nettoyage et Generation SamAccountName
-    $Prenom = $User.Prenom.Trim(); $Nom = $User.Nom.Trim()
-    $Departement = $User.Departement.Trim(); $Bureau = $User.Bureau.Trim()
+    $Prenom = $User.Prenom.Trim()
+    $Nom = $User.Nom.Trim()
+    $CSVDept = $User.Departement.Trim()
+    $Bureau = $User.Bureau.Trim()
     $Fonction = if ($User.PSObject.Properties.Name -contains 'Fonction') { $User.Fonction } else { $User.Description }
     
-    $PrenomClean = ($Prenom -replace '[^a-zA-Z0-9]', '').ToLower() # Simplifié pour robustesse
+    # Nettoyage nom compte
+    $PrenomClean = ($Prenom -replace '[^a-zA-Z0-9]', '').ToLower()
     $NomClean = ($Nom -replace '[^a-zA-Z0-9]', '').ToLower()
     
     $BaseName = "$PrenomClean.$NomClean"
@@ -83,20 +131,24 @@ foreach ($User in $Users) {
     }
     $UsedAccounts[$SamName] = $true
 
-    $OUPath = "OU=$Departement,OU=$($Departement.Split('/')[0]),DC=Belgique,DC=lan"
+    # Retrouver le chemin OU correct
+    $OUPath = $DepartementToOUPath[$CSVDept]
+    if (-not $OUPath) {
+        Write-Host "SKIP: $SamName - Departement '$CSVDept' non mappe" -ForegroundColor Red
+        continue
+    }
+
     $Password = ConvertTo-SecureString "P@ssword2025!" -AsPlainText -Force
 
     try {
         if (-not (Get-ADUser -Filter "SamAccountName -eq '$SamName'" -ErrorAction SilentlyContinue)) {
             New-ADUser -Name "$Prenom $Nom" -GivenName $Prenom -Surname $Nom -SamAccountName $SamName `
                 -UserPrincipalName "$SamName@Belgique.lan" -DisplayName "$Prenom $Nom" -Title $Fonction `
-                -Department $Departement -Office $Bureau -Path $OUPath -AccountPassword $Password `
+                -Department $CSVDept -Office $Bureau -Path $OUPath -AccountPassword $Password `
                 -Enabled $true -ChangePasswordAtLogon $true -Confirm:$false
             
-            Write-Host "OK: $SamName ($Bureau)" -ForegroundColor Green
+            Write-Host "OK: $SamName ($CSVDept) -> $Bureau" -ForegroundColor Green
             $UserCount++
-        } else {
-            Write-Host "SKIP: $SamName existe" -ForegroundColor Gray
         }
     } catch {
         Write-Host "ERREUR: $SamName - $_" -ForegroundColor Red
@@ -104,29 +156,33 @@ foreach ($User in $Users) {
     }
 }
 
-# --- [4] Application Horaires (NET USER / EN) ---
-Write-Host "`n[4/5] Application des horaires (NET USER - ANGLAIS)..." -ForegroundColor Yellow
+# --- [5] Application Horaires (NET USER) ---
+Write-Host "`n[5/5] Application des horaires (NET USER)..." -ForegroundColor Yellow
 
-$StdApplied = 0; $ITApplied = 0; $Failed = 0
-$AllUsers = Get-ADUser -Filter * -SearchBase "DC=Belgique,DC=lan" -Properties Department | Where-Object { $_.Enabled -eq $true }
+$StdApplied = 0
+$ITApplied = 0
+$Failed = 0
+$AllUsers = Get-ADUser -Filter "Enabled -eq 'True'" -SearchBase "DC=Belgique,DC=lan" | Where-Object { $_.Enabled -eq $true }
 
 foreach ($User in $AllUsers) {
     if ($User.SamAccountName -in @("Administrator", "Guest", "krbtgt")) { continue }
     
+    # Recuperer le sous-dept depuis OU
+    $OU = $User.DistinguishedName
+    $OUParts = $OU -split "," | Where-Object { $_ -like "OU=*" }
+    $SubDept = ($OUParts[0] -replace "OU=", "").Trim()
+    
     $SamName = $User.SamAccountName
-    $IsIT = $InfoOUs -contains $User.Department
+    $IsIT = $InfoOUs -contains $SubDept
 
     if ($IsIT) {
-        # IT = Tout autorisé (24/24)
         $Cmd = "net user $SamName /times:all /domain"
         $Type = "IT (24h)"
     } else {
-        # Std = 06:00-18:00 Lun-Ven (M-F)
         $Cmd = "net user $SamName /times:M-F,06:00-18:00 /domain"
         $Type = "Std (6-18h)"
     }
 
-    # Execution silencieuse
     Invoke-Expression $Cmd | Out-Null
     
     if ($LASTEXITCODE -eq 0) {
@@ -138,12 +194,9 @@ foreach ($User in $AllUsers) {
     }
 }
 
-# --- [5] Bilan ---
+# --- BILAN ---
 Write-Host "`n========================================" -ForegroundColor Green
-Write-Host "BILAN IMPORT & CONFIGURATION" -ForegroundColor Green
-Write-Host "Utilisateurs traites: $UserCount" -ForegroundColor Green
-Write-Host "Horaires configures:" -ForegroundColor Green
-Write-Host "  - Standard (M-F 6-18h): $StdApplied" -ForegroundColor Green
-Write-Host "  - IT (24h/24): $ITApplied" -ForegroundColor Green
-Write-Host "  - Echecs: $Failed" -ForegroundColor $(if ($Failed -eq 0) { "Green" } else { "Red" })
+Write-Host "IMPORT TERMINE" -ForegroundColor Green
+Write-Host "Utilisateurs: $UserCount | Erreurs: $ErrorCount" -ForegroundColor Green
+Write-Host "Horaires: Std=$StdApplied | IT=$ITApplied | Echecs=$Failed" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green

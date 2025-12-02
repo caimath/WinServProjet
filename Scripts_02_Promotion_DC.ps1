@@ -17,12 +17,12 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`n[VERIFICATION] Verification de l'IP..." -ForegroundColor Yellow
 
-$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.28.1.1" }
+$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.28.60.21" }
 
 if ($IPCheck) {
-    Write-Host "OK: IP 172.28.1.1 trouvee." -ForegroundColor Green
+    Write-Host "OK: IP 172.28.60.21 trouvee." -ForegroundColor Green
 } else {
-    Write-Host "ERREUR: L'IP 172.28.1.1 n'est pas configuree !" -ForegroundColor Red
+    Write-Host "ERREUR: L'IP 172.28.60.21 n'est pas configuree !" -ForegroundColor Red
     Break
 }
 
@@ -39,12 +39,12 @@ try {
 Write-Host "`n[2/4] Configuration DHCP pour VLANs..." -ForegroundColor Yellow
 
 $DHCPScopes = @(
-    @{ Name = "VLAN10-Admin";       Start = "172.28.10.50"; End = "172.28.10.150"; Subnet = "255.255.255.0" },
-    @{ Name = "VLAN20-RD";          Start = "172.28.20.50"; End = "172.28.20.150"; Subnet = "255.255.255.0" },
-    @{ Name = "VLAN30-IT";          Start = "172.28.30.50"; End = "172.28.30.150"; Subnet = "255.255.255.0" },
-    @{ Name = "VLAN40-Commercial";  Start = "172.28.40.50"; End = "172.28.40.150"; Subnet = "255.255.255.0" },
-    @{ Name = "VLAN50-Technique";   Start = "172.28.50.50"; End = "172.28.50.150"; Subnet = "255.255.255.0" },
-    @{ Name = "VLAN99-VoIP";        Start = "172.28.99.50"; End = "172.28.99.150"; Subnet = "255.255.255.0" }
+    @{ Name = "VLAN10-Admin";       Start = "172.28.10.3"; End = "172.28.10.253"; Subnet = "255.255.255.0" },
+    @{ Name = "VLAN20-RD";          Start = "172.28.20.3"; End = "172.28.20.253"; Subnet = "255.255.255.0" },
+    @{ Name = "VLAN30-IT";          Start = "172.28.30.3"; End = "172.28.30.253"; Subnet = "255.255.255.0" },
+    @{ Name = "VLAN40-Commercial";  Start = "172.28.40.3"; End = "172.28.40.253"; Subnet = "255.255.255.0" },
+    @{ Name = "VLAN50-Technique";   Start = "172.28.50.3"; End = "172.28.50.253"; Subnet = "255.255.255.0" },
+    @{ Name = "VLAN99-VoIP";        Start = "172.28.99.3"; End = "172.28.99.253"; Subnet = "255.255.255.0" }
 )
 
 foreach ($Scope in $DHCPScopes) {
@@ -78,7 +78,7 @@ Write-Host "========================================" -ForegroundColor Green
 # Fichier: 02-Promo-DC-Replica-NAMUR.ps1
 
 $DomainName = "Belgique.lan"
-$SourceDC = "172.28.1.1"
+$SourceDC = "172.28.60.21"
 $SourceDCFQDN = "DC-BRUXELLE.Belgique.lan"
 $SiteName = "NAMUR"
 $DSRMPassword = ConvertTo-SecureString "P@ssword2025!DSRM" -AsPlainText -Force
@@ -92,20 +92,20 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`n[VERIFICATION] Avant de continuer..." -ForegroundColor Yellow
 
-$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.25.0.1" }
+$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.25.60.21" }
 
 if ($IPCheck) {
-    Write-Host "OK: IP 172.25.0.1 trouvee." -ForegroundColor Green
+    Write-Host "OK: IP 172.25.60.21 trouvee." -ForegroundColor Green
 } else {
-    Write-Host "ERREUR: L'IP 172.25.0.1 n'est pas configuree !" -ForegroundColor Red
+    Write-Host "ERREUR: L'IP 172.25.60.21 n'est pas configuree !" -ForegroundColor Red
     Break
 }
 
 Write-Host "`nIMPORTANT: Verifiez que..." -ForegroundColor Yellow
-Write-Host "  1. BRUXELLE (172.28.1.1) est demarree" -ForegroundColor Gray
-Write-Host "  2. Routage entre 172.28.x.x et 172.25.0.x fonctionne" -ForegroundColor Gray
+Write-Host "  1. BRUXELLE (172.28.60.21) est demarree" -ForegroundColor Gray
+Write-Host "  2. Routage entre 172.28.x.x et 172.25.60.x fonctionne" -ForegroundColor Gray
 
-Write-Host "`nTest: ping 172.28.1.1" -ForegroundColor Cyan
+Write-Host "`nTest: ping 172.28.60.21" -ForegroundColor Cyan
 $TestPing = Test-Connection -ComputerName $SourceDC -Count 1 -Quiet -ErrorAction SilentlyContinue
 
 if ($TestPing) {
@@ -162,7 +162,7 @@ Write-Host "  Lecture/Ecriture - Replica complet de Bruxelle" -ForegroundColor G
 # Fichier: 02-Promo-DC-RODC-MONS.ps1
 
 $DomainName = "Belgique.lan"
-$SourceDC = "172.25.0.1"
+$SourceDC = "172.25.60.21"
 $SourceDCFQDN = "DC-NAMUR.Belgique.lan"
 $SiteName = "MONS"
 $DSRMPassword = ConvertTo-SecureString "P@ssword2025!DSRM" -AsPlainText -Force
@@ -176,20 +176,20 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 Write-Host "`n[VERIFICATION] Avant de continuer..." -ForegroundColor Yellow
 
-$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.27.0.1" }
+$IPCheck = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -eq "172.27.60.1" }
 
 if ($IPCheck) {
-    Write-Host "OK: IP 172.27.0.1 trouvee." -ForegroundColor Green
+    Write-Host "OK: IP 172.27.60.1 trouvee." -ForegroundColor Green
 } else {
-    Write-Host "ERREUR: L'IP 172.27.0.1 n'est pas configuree !" -ForegroundColor Red
+    Write-Host "ERREUR: L'IP 172.27.60.1 n'est pas configuree !" -ForegroundColor Red
     Break
 }
 
 Write-Host "`nIMPORTANT: Verifiez que..." -ForegroundColor Yellow
-Write-Host "  1. NAMUR (172.25.0.1) est demarree" -ForegroundColor Gray
+Write-Host "  1. NAMUR (172.25.60.21) est demarree" -ForegroundColor Gray
 Write-Host "  2. Routage fonctionne: 172.27.x.x <-> 172.25.x.x" -ForegroundColor Gray
 
-Write-Host "`nTest: ping 172.25.0.1" -ForegroundColor Cyan
+Write-Host "`nTest: ping 172.25.60.21" -ForegroundColor Cyan
 $TestPing = Test-Connection -ComputerName $SourceDC -Count 1 -Quiet -ErrorAction SilentlyContinue
 
 if ($TestPing) {
