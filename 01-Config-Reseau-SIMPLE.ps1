@@ -5,7 +5,7 @@
 
 # 🔑 MODIFIER CES VARIABLES SELON LE SERVEUR
 $ServerName = "DC-BRUXELLES"
-$IPAddress = "172.28.1.1"
+$IPAddress = "172.28.60.1"
 $PrefixLength = 24
 $DNS = "127.0.0.1"
 

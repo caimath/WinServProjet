@@ -4,14 +4,6 @@
 # Crée la forêt Belgique.lan avec site BRUXELLE
 # ════════════════════════════════════════════════════════════════════════════
 
-# SCRIPT 02A : Promotion DC ROOT BRUXELLE
-# Fichier: 02-Promo-DC-Root-BRUXELLE.ps1
-
-# SCRIPT 02A : Promotion DC ROOT BRUXELLE
-# Fichier: 02-Promo-DC-Root-BRUXELLE.ps1
-
-# SCRIPT 02A : Promotion DC ROOT BRUXELLE
-# Fichier: 02-Promo-DC-Root-BRUXELLE.ps1
 
 $DomainName = "Belgique.lan"
 $SiteName = "BRUXELLE"
@@ -81,9 +73,6 @@ Write-Host "`n========================================" -ForegroundColor Green
 Write-Host "OK: PROMOTION REUSSIE" -ForegroundColor Green
 Write-Host "Redemarrage automatique du serveur..." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
-
-
-
 
 ## SCRIPT 02B : Promotion DC REPLICA NAMUR
 # Fichier: 02-Promo-DC-Replica-NAMUR.ps1
