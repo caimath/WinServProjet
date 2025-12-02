@@ -1,11 +1,13 @@
-# SCRIPT 03 : Import Utilisateurs - POWERSHI LL 5.1 COMPATIBLE
-# Fichier: 03-Import-Utilisateurs.ps1
+# SCRIPT 03 : Import Utilisateurs AVEC BUREAU, HIERARCHIE, PROTECTION ET LOGON HOURS (ANGLAIS)
+# Fichier: 03-Import-Utilisateurs-Final.ps1
+# PowerShell 5.1 COMPATIBLE
 
 $CSVPath = "C:\users\Administrateur\Downloads\Employes-Liste6_ADAPTEE.csv"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "IMPORT DES UTILISATEURS" -ForegroundColor Cyan
+Write-Host "IMPORT DES UTILISATEURS AVEC BUREAU ET HORAIRES" -ForegroundColor Cyan
 Write-Host "Domaine: Belgique.lan" -ForegroundColor Cyan
+Write-Host "Horaires: Std 6h-18h (M-F) | IT 24h/24" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 if (-not (Test-Path $CSVPath)) {
@@ -13,154 +15,135 @@ if (-not (Test-Path $CSVPath)) {
     Break
 }
 
-Write-Host "`n[1/3] Lecture du CSV..." -ForegroundColor Yellow
+# --- [1] Lecture CSV ---
+Write-Host "`n[1/5] Lecture du CSV..." -ForegroundColor Yellow
 $Users = Import-Csv -Path $CSVPath -Delimiter ";" -Encoding UTF8
-
 Write-Host "OK: $($Users.Count) utilisateurs a importer" -ForegroundColor Green
 
-Write-Host "`n[2/3] Creation des OUs par departement..." -ForegroundColor Yellow
+# --- [2] Structure OUs + Protection ---
+Write-Host "`n[2/5] Creation des OUs avec hierarchie et PROTECTION..." -ForegroundColor Yellow
 
-$OUs = $Users.Departement | Select-Object -Unique
-
-foreach ($OU in $OUs) {
-    if ([string]::IsNullOrWhiteSpace($OU)) { continue }
-    
-    $OU = $OU.Trim()
-    try {
-        $CheckOU = Get-ADOrganizationalUnit -Filter "Name -eq '$OU'" -ErrorAction SilentlyContinue
-        if (-not $CheckOU) {
-            New-ADOrganizationalUnit -Name $OU -Path "DC=Belgique,DC=lan" -Confirm:$false
-            Write-Host "OK: OU creee: $OU" -ForegroundColor Green
-        } else {
-            Write-Host "OK: OU existante: $OU" -ForegroundColor Gray
-        }
-    } catch {
-        Write-Host "ERREUR creation OU $OU : $_" -ForegroundColor Red
+$Departments = @{}
+foreach ($User in $Users) {
+    $Dept = $User.Departement.Trim()
+    if ($Dept -and $Dept.Contains("/")) {
+        $Category = $Dept.Split("/")[0].Trim()
+        if (-not $Departments.ContainsKey($Category)) { $Departments[$Category] = @() }
+        if ($Departments[$Category] -notcontains $Dept) { $Departments[$Category] += $Dept }
     }
 }
 
-Write-Host "`n[3/3] Creation des utilisateurs..." -ForegroundColor Yellow
+foreach ($Category in $Departments.Keys) {
+    $CategoryOUPath = "OU=$Category,DC=Belgique,DC=lan"
+    try {
+        if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$Category'" -ErrorAction SilentlyContinue)) {
+            New-ADOrganizationalUnit -Name $Category -Path "DC=Belgique,DC=lan" -Confirm:$false
+            Write-Host "OK: OU categorie creee: $Category" -ForegroundColor Green
+            Set-ADOrganizationalUnit -Identity $CategoryOUPath -ProtectedFromAccidentalDeletion $true -Confirm:$false
+        }
+    } catch { Write-Host "ERREUR OU $Category: $_" -ForegroundColor Red }
+    
+    foreach ($Dept in $Departments[$Category]) {
+        $DeptOUPath = "OU=$Dept,OU=$Category,DC=Belgique,DC=lan"
+        try {
+            if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$Dept'" -ErrorAction SilentlyContinue)) {
+                New-ADOrganizationalUnit -Name $Dept -Path $CategoryOUPath -Confirm:$false
+                Write-Host "OK: OU departement creee: $Dept" -ForegroundColor Green
+                Set-ADOrganizationalUnit -Identity $DeptOUPath -ProtectedFromAccidentalDeletion $true -Confirm:$false
+            }
+        } catch { Write-Host "ERREUR OU $Dept: $_" -ForegroundColor Red }
+    }
+}
+
+# --- [3] Creation Users ---
+Write-Host "`n[3/5] Creation des utilisateurs..." -ForegroundColor Yellow
 
 $UserCount = 0
 $ErrorCount = 0
 $UsedAccounts = @{}
+$InfoOUs = @("HotLine/Informatique", "Systemes/Informatique", "Developpement/Informatique")
 
 foreach ($User in $Users) {
-    $Prenom = $User.Prenom.Trim()
-    $Nom = $User.Nom.Trim()
-    $Departement = $User.Departement.Trim()
+    # Nettoyage et Generation SamAccountName
+    $Prenom = $User.Prenom.Trim(); $Nom = $User.Nom.Trim()
+    $Departement = $User.Departement.Trim(); $Bureau = $User.Bureau.Trim()
     $Fonction = if ($User.PSObject.Properties.Name -contains 'Fonction') { $User.Fonction } else { $User.Description }
     
-    # Traiter les prenoms composes (Jean-Pierre -> jeanPierre)
-    $PrenomParts = @($Prenom -split '[^a-zA-Z]' | Where-Object { $_ -ne '' })
-    
-    if ($PrenomParts.Count -gt 1) {
-        $PrenomClean = $PrenomParts[0].ToLower()
-        for ($i = 1; $i -lt $PrenomParts.Count; $i++) {
-            $PrenomClean += $PrenomParts[$i].Substring(0,1).ToUpper() + $PrenomParts[$i].Substring(1).ToLower()
-        }
-    } else {
-        $PrenomClean = ($Prenom -replace '[^a-zA-Z0-9]', '').ToLower()
-    }
-    
+    $PrenomClean = ($Prenom -replace '[^a-zA-Z0-9]', '').ToLower() # Simplifié pour robustesse
     $NomClean = ($Nom -replace '[^a-zA-Z0-9]', '').ToLower()
     
-    # Construire le compte de base
-    $BaseAccountName = "$PrenomClean.$NomClean"
-    if ($BaseAccountName.Length -gt 20) {
-        $InitialPrenom = $PrenomClean.Substring(0, 1)
-        $BaseAccountName = "$InitialPrenom.$NomClean"
-    }
-    if ($BaseAccountName.Length -gt 20) {
-        $BaseAccountName = $BaseAccountName.Substring(0, 20)
-    }
+    $BaseName = "$PrenomClean.$NomClean"
+    if ($BaseName.Length -gt 20) { $BaseName = $BaseName.Substring(0, 20) }
     
-    # Compter les occurrences du meme prenom.nom dans le CSV
-    $CountInCSV = 0
-    foreach ($CheckUser in $Users) {
-        $CheckPrenom = $CheckUser.Prenom.Trim()
-        $CheckNom = $CheckUser.Nom.Trim()
-        
-        $CheckPrenomParts = @($CheckPrenom -split '[^a-zA-Z]' | Where-Object { $_ -ne '' })
-        if ($CheckPrenomParts.Count -gt 1) {
-            $CheckPrenomClean = $CheckPrenomParts[0].ToLower()
-            for ($j = 1; $j -lt $CheckPrenomParts.Count; $j++) {
-                $CheckPrenomClean += $CheckPrenomParts[$j].Substring(0,1).ToUpper() + $CheckPrenomParts[$j].Substring(1).ToLower()
-            }
-        } else {
-            $CheckPrenomClean = ($CheckPrenom -replace '[^a-zA-Z0-9]', '').ToLower()
-        }
-        
-        $CheckNomClean = ($CheckNom -replace '[^a-zA-Z0-9]', '').ToLower()
-        $CheckBase = "$CheckPrenomClean.$CheckNomClean"
-        if ($CheckBase.Length -gt 20) {
-            $CheckBase = $CheckBase.Substring(0, 1) + '.' + $CheckNomClean
-        }
-        if ($CheckBase.Length -gt 20) {
-            $CheckBase = $CheckBase.Substring(0, 20)
-        }
-        
-        if ($CheckBase -eq $BaseAccountName) {
-            $CountInCSV++
-        }
-    }
-    
-    # Si doublon, forcer initial.nom
-    if ($CountInCSV -gt 1) {
-        $BaseAccountName = "$($PrenomClean.Substring(0, 1)).$NomClean"
-        if ($BaseAccountName.Length -gt 20) {
-            $BaseAccountName = $BaseAccountName.Substring(0, 20)
-        }
-    }
-    
-    # Gerer les doublons deja crees
-    $SamAccountName = $BaseAccountName
+    $SamName = $BaseName
     $Suffix = 0
-    while ($UsedAccounts.ContainsKey($SamAccountName)) {
+    while ($UsedAccounts.ContainsKey($SamName) -or (Get-ADUser -Filter "SamAccountName -eq '$SamName'" -ErrorAction SilentlyContinue)) {
         $Suffix++
-        $SamAccountName = "$BaseAccountName.$Suffix"
-        if ($SamAccountName.Length -gt 20) {
-            $SamAccountName = $SamAccountName.Substring(0, 20)
-        }
+        $SamName = "$BaseName$Suffix"
     }
-    
-    $UsedAccounts[$SamAccountName] = $true
-    
-    $UPN = "$SamAccountName@Belgique.lan"
-    $Password = ConvertTo-SecureString "P@ssword2025!" -AsPlainText -Force
-    $OUPath = "OU=$Departement,DC=Belgique,DC=lan"
-    
-    try {
-        if (Get-ADUser -Filter "SamAccountName -eq '$SamAccountName'" -ErrorAction SilentlyContinue) {
-            Write-Host "SKIP: $SamAccountName existe deja" -ForegroundColor Gray
-            continue
-        }
+    $UsedAccounts[$SamName] = $true
 
-        New-ADUser -Name "$Prenom $Nom" `
-            -GivenName $Prenom `
-            -Surname $Nom `
-            -SamAccountName $SamAccountName `
-            -UserPrincipalName $UPN `
-            -DisplayName "$Prenom $Nom" `
-            -Title $Fonction `
-            -Department $Departement `
-            -Path $OUPath `
-            -AccountPassword $Password `
-            -Enabled $true `
-            -ChangePasswordAtLogon $true `
-            -Confirm:$false
-        
-        Write-Host "OK: $SamAccountName ($Prenom $Nom)" -ForegroundColor Green
-        $UserCount++
-        
+    $OUPath = "OU=$Departement,OU=$($Departement.Split('/')[0]),DC=Belgique,DC=lan"
+    $Password = ConvertTo-SecureString "P@ssword2025!" -AsPlainText -Force
+
+    try {
+        if (-not (Get-ADUser -Filter "SamAccountName -eq '$SamName'" -ErrorAction SilentlyContinue)) {
+            New-ADUser -Name "$Prenom $Nom" -GivenName $Prenom -Surname $Nom -SamAccountName $SamName `
+                -UserPrincipalName "$SamName@Belgique.lan" -DisplayName "$Prenom $Nom" -Title $Fonction `
+                -Department $Departement -Office $Bureau -Path $OUPath -AccountPassword $Password `
+                -Enabled $true -ChangePasswordAtLogon $true -Confirm:$false
+            
+            Write-Host "OK: $SamName ($Bureau)" -ForegroundColor Green
+            $UserCount++
+        } else {
+            Write-Host "SKIP: $SamName existe" -ForegroundColor Gray
+        }
     } catch {
-        Write-Host "ERREUR: $SamAccountName - $_" -ForegroundColor Red
+        Write-Host "ERREUR: $SamName - $_" -ForegroundColor Red
         $ErrorCount++
     }
 }
 
+# --- [4] Application Horaires (NET USER / EN) ---
+Write-Host "`n[4/5] Application des horaires (NET USER - ANGLAIS)..." -ForegroundColor Yellow
+
+$StdApplied = 0; $ITApplied = 0; $Failed = 0
+$AllUsers = Get-ADUser -Filter * -SearchBase "DC=Belgique,DC=lan" -Properties Department | Where-Object { $_.Enabled -eq $true }
+
+foreach ($User in $AllUsers) {
+    if ($User.SamAccountName -in @("Administrator", "Guest", "krbtgt")) { continue }
+    
+    $SamName = $User.SamAccountName
+    $IsIT = $InfoOUs -contains $User.Department
+
+    if ($IsIT) {
+        # IT = Tout autorisé (24/24)
+        $Cmd = "net user $SamName /times:all /domain"
+        $Type = "IT (24h)"
+    } else {
+        # Std = 06:00-18:00 Lun-Ven (M-F)
+        $Cmd = "net user $SamName /times:M-F,06:00-18:00 /domain"
+        $Type = "Std (6-18h)"
+    }
+
+    # Execution silencieuse
+    Invoke-Expression $Cmd | Out-Null
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "OK: $SamName -> $Type" -ForegroundColor Green
+        if ($IsIT) { $ITApplied++ } else { $StdApplied++ }
+    } else {
+        Write-Host "ERREUR: $SamName (Code $LASTEXITCODE)" -ForegroundColor Red
+        $Failed++
+    }
+}
+
+# --- [5] Bilan ---
 Write-Host "`n========================================" -ForegroundColor Green
-Write-Host "OK: IMPORT TERMINE" -ForegroundColor Green
-Write-Host "Utilisateurs crees: $UserCount" -ForegroundColor Green
-Write-Host "Erreurs: $ErrorCount" -ForegroundColor $(if ($ErrorCount -eq 0) { "Green" } else { "Red" })
+Write-Host "BILAN IMPORT & CONFIGURATION" -ForegroundColor Green
+Write-Host "Utilisateurs traites: $UserCount" -ForegroundColor Green
+Write-Host "Horaires configures:" -ForegroundColor Green
+Write-Host "  - Standard (M-F 6-18h): $StdApplied" -ForegroundColor Green
+Write-Host "  - IT (24h/24): $ITApplied" -ForegroundColor Green
+Write-Host "  - Echecs: $Failed" -ForegroundColor $(if ($Failed -eq 0) { "Green" } else { "Red" })
 Write-Host "========================================" -ForegroundColor Green
