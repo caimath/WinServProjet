@@ -21,7 +21,7 @@ Write-Host "`n[1/7] Creation de la structure de dossiers..." -ForegroundColor Ye
 $Structure = @{
     "Ressources humaines" = @{
         "Gestion du personnel" = "romain.marcel"
-        "Recrutement"          = "franois.bellante"
+        "Recrutement"          = "francois.bellante"
     }
     "Finances" = @{
         "Comptabilité"    = "geoffrey.craeyé"
@@ -33,7 +33,7 @@ $Structure = @{
         "Systèmes"      = "arnaud.baisagurova"
     }
     "R&D" = @{
-        "Recherche" = "lorraine.alkhamry"
+        "Recherche" = "lorraine.al-khamry"
         "Testing"   = "emilie.bayanaknlend"
     }
     "Technique" = @{
@@ -45,7 +45,7 @@ $Structure = @{
         "Technico"    = "adriano.cambier"
     }
     "Marketting" = @{
-        "Site1" = "rmi.brodkom"
+        "Site1" = "remi.brodkom"
         "Site2" = "simon.amand"
         "Site3" = "vincent.aubly"
         "Site4" = "audrey.brogniez"

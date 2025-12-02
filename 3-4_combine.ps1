@@ -1,6 +1,7 @@
 # SCRIPT 03-04 FUSIONNE REDUIT : IMPORT UTILISATEURS + CONFIGURATION AD
 # Combine : Création OUs + Utilisateurs + Mots de passe aléatoires + Délégation
 # PowerShell 5.1 COMPATIBLE
+# FIX : Normalisation des accents et caractères spéciaux dans les logins
 
 Write-Host "Activation de la Corbeille AD pour la foret Belgique.lan..." -ForegroundColor Yellow
 
@@ -26,6 +27,85 @@ Write-Host "========================================" -ForegroundColor Cyan
 if (-not (Test-Path $CSVPath)) {
     Write-Host "ERREUR: Fichier CSV non trouve!" -ForegroundColor Red
     Break
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# FONCTION DE NORMALISATION DES ACCENTS ET CARACTERES SPECIAUX
+# ════════════════════════════════════════════════════════════════════════════
+
+function Remove-Accents {
+    param(
+        [string]$InputString
+    )
+    
+    $Result = $InputString
+    
+    # Remplacer les accents majuscules
+    $Result = $Result.Replace('À', 'A')
+    $Result = $Result.Replace('Á', 'A')
+    $Result = $Result.Replace('Â', 'A')
+    $Result = $Result.Replace('Ã', 'A')
+    $Result = $Result.Replace('Ä', 'A')
+    $Result = $Result.Replace('Å', 'A')
+    $Result = $Result.Replace('È', 'E')
+    $Result = $Result.Replace('É', 'E')
+    $Result = $Result.Replace('Ê', 'E')
+    $Result = $Result.Replace('Ë', 'E')
+    $Result = $Result.Replace('Ì', 'I')
+    $Result = $Result.Replace('Í', 'I')
+    $Result = $Result.Replace('Î', 'I')
+    $Result = $Result.Replace('Ï', 'I')
+    $Result = $Result.Replace('Ñ', 'N')
+    $Result = $Result.Replace('Ò', 'O')
+    $Result = $Result.Replace('Ó', 'O')
+    $Result = $Result.Replace('Ô', 'O')
+    $Result = $Result.Replace('Õ', 'O')
+    $Result = $Result.Replace('Ö', 'O')
+    $Result = $Result.Replace('Ù', 'U')
+    $Result = $Result.Replace('Ú', 'U')
+    $Result = $Result.Replace('Û', 'U')
+    $Result = $Result.Replace('Ü', 'U')
+    $Result = $Result.Replace('Ç', 'C')
+    $Result = $Result.Replace('Ý', 'Y')
+    $Result = $Result.Replace('Æ', 'AE')
+    $Result = $Result.Replace('Œ', 'OE')
+    
+    # Remplacer les accents minuscules
+    $Result = $Result.Replace('à', 'a')
+    $Result = $Result.Replace('á', 'a')
+    $Result = $Result.Replace('â', 'a')
+    $Result = $Result.Replace('ã', 'a')
+    $Result = $Result.Replace('ä', 'a')
+    $Result = $Result.Replace('å', 'a')
+    $Result = $Result.Replace('è', 'e')
+    $Result = $Result.Replace('é', 'e')
+    $Result = $Result.Replace('ê', 'e')
+    $Result = $Result.Replace('ë', 'e')
+    $Result = $Result.Replace('ì', 'i')
+    $Result = $Result.Replace('í', 'i')
+    $Result = $Result.Replace('î', 'i')
+    $Result = $Result.Replace('ï', 'i')
+    $Result = $Result.Replace('ñ', 'n')
+    $Result = $Result.Replace('ò', 'o')
+    $Result = $Result.Replace('ó', 'o')
+    $Result = $Result.Replace('ô', 'o')
+    $Result = $Result.Replace('õ', 'o')
+    $Result = $Result.Replace('ö', 'o')
+    $Result = $Result.Replace('ù', 'u')
+    $Result = $Result.Replace('ú', 'u')
+    $Result = $Result.Replace('û', 'u')
+    $Result = $Result.Replace('ü', 'u')
+    $Result = $Result.Replace('ç', 'c')
+    $Result = $Result.Replace('ý', 'y')
+    $Result = $Result.Replace('ß', 'ss')
+    $Result = $Result.Replace('æ', 'ae')
+    $Result = $Result.Replace('œ', 'oe')
+    
+    # Supprimer les espaces et caractères spéciaux
+    $Result = $Result -replace '\s+', ''  # Supprimer espaces
+    $Result = $Result -replace '[^a-zA-Z0-9._-]', ''  # Garder que alphanumériques, point, underscore, tiret
+    
+    return $Result
 }
 
 # --- [1] Lecture CSV ---
@@ -147,13 +227,17 @@ foreach ($User in $Users) {
     $Bureau = $User.Bureau.Trim()
     $Fonction = if ($User.PSObject.Properties.Name -contains 'Fonction') { $User.Fonction.Trim() } else { $User.Description.Trim() }
     
-    # Génération SamAccountName unique
-    $PrenomClean = ($Prenom -replace '[^a-zA-Z0-9]', '').ToLower()
-    $NomClean = ($Nom -replace '[^a-zA-Z0-9]', '').ToLower()
+    # ════════════════════════════════════════════════════════════════════════
+    # NORMALISATION DES ACCENTS - FORMAT PRENOM.NOM
+    # ════════════════════════════════════════════════════════════════════════
+    $BaseName = (Remove-Accents -InputString "$Prenom.$Nom").ToLower()
     
-    $BaseName = "$PrenomClean.$NomClean"
-    if ($BaseName.Length -gt 20) { $BaseName = $BaseName.Substring(0, 20) }
+    # Limiter à 20 chars max (contrainte AD)
+    if ($BaseName.Length -gt 20) { 
+        $BaseName = $BaseName.Substring(0, 20) 
+    }
     
+    # Gérer les doublons avec suffixe
     $SamName = $BaseName
     $Suffix = 0
     while ($UsedAccounts.ContainsKey($SamName) -or (Get-ADUser -Filter "SamAccountName -eq '${SamName}'" -ErrorAction SilentlyContinue)) {
@@ -176,161 +260,86 @@ foreach ($User in $Users) {
     $NewPassword = Generate-SecurePassword
     $SecurePassword = ConvertTo-SecureString $NewPassword -AsPlainText -Force
 
+    # Création utilisateur AD
     try {
-        if (-not (Get-ADUser -Filter "SamAccountName -eq '${SamName}'" -ErrorAction SilentlyContinue)) {
-            New-ADUser -Name "$Prenom $Nom" -GivenName $Prenom -Surname $Nom -SamAccountName $SamName `
-                -UserPrincipalName "$SamName@Belgique.lan" -DisplayName "$Prenom $Nom" -Title $Fonction `
-                -Department $Departement -Office $Bureau -Path $OUPath -AccountPassword $SecurePassword `
-                -Enabled $true -ChangePasswordAtLogon $false -Confirm:$false
-            
-            Write-Host "OK: $SamName ($Departement)" -ForegroundColor Green
-            $UserCount++
-            
-            # Enregistrement du mot de passe
-            $PasswordLog += [PSCustomObject]@{
-                SamAccountName = $SamName
-                Password = $NewPassword
-                DateChanged = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
-            }
-        } else {
-            Write-Host "SKIP: $SamName existe deja" -ForegroundColor Gray
+        $UserParams = @{
+            SamAccountName = $SamName
+            UserPrincipalName = "$SamName@belgique.lan"
+            GivenName = $Prenom
+            Surname = $Nom
+            DisplayName = "$Prenom $Nom"
+            Name = "$Prenom $Nom"
+            AccountPassword = $SecurePassword
+            Enabled = $true
+            Path = $OUPath
+            ChangePasswordAtLogon = $true
+            Confirm = $false
         }
+        
+        # Ajouter description/fonction si disponible
+        if ($Fonction) {
+            $UserParams.Description = $Fonction
+        }
+        
+        # Ajouter bureau si disponible
+        if ($Bureau) {
+            $UserParams.Office = $Bureau
+        }
+
+        New-ADUser @UserParams
+        Write-Host "OK: User cree: $SamName (OU: $OUPath)" -ForegroundColor Green
+        
+        # Ajouter au log des mots de passe
+        $PasswordLog += [PSCustomObject]@{
+            SamAccountName = $SamName
+            DisplayName = "$Prenom $Nom"
+            Password = $NewPassword
+            CreatedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        
+        $UserCount++
     } catch {
-        Write-Host "ERREUR: $SamName ($Departement) - $_" -ForegroundColor Red
+        Write-Host "ERREUR creation user $SamName : $_" -ForegroundColor Red
         $ErrorCount++
     }
 }
 
-# Export CSV mots de passe
-$PasswordLogPath = "$env:USERPROFILE\Downloads\Passwords_Export.csv"
-try {
-    $PasswordLog | Export-Csv -Path $PasswordLogPath -NoTypeInformation -Encoding UTF8 -Force
-    Write-Host "OK: Mots de passe exportes ($($PasswordLog.Count) utilisateurs)" -ForegroundColor Green
-    Write-Host "    -> $PasswordLogPath" -ForegroundColor Cyan
-} catch {
-    Write-Host "ERREUR export CSV: $_" -ForegroundColor Red
-}
+Write-Host "Utilisateurs crees: $UserCount | Erreurs: $ErrorCount" -ForegroundColor Cyan
 
-# --- [5] Configuration delegation administrative + ACL ---
-Write-Host "`n[5/6] Configuration delegation administrative..." -ForegroundColor Yellow
+# --- [5] Delegation des OUs (if needed) ---
+Write-Host "`n[5/6] Configuration delegation OUs..." -ForegroundColor Yellow
 
-$DelegationMap = @{
-    "Commerciaux" = "cline.glinka"
-    "Technique" = "axel.irakoze"
-    "Informatique" = "adrien.ilic"
-    "Ressources humaines" = "romain.marcel"
-    "Direction" = "pol.kuntondaluezi"
-    "R&D" = "louismichel.galand"
-    "Marketting" = "maxime.gudin"
-    "Finances" = "jrmy.higueraslozano"
-}
+# Example: Delegation a un groupe de helpdesk (a adapter)
+# $DelegateGroup = "CN=Helpdesk,CN=Users,DC=Belgique,DC=lan"
+# foreach ($SubDept in $OUStructure.Values | ForEach-Object { $_ }) {
+#     $OUPath = "OU=$SubDept,..."
+#     # Grant-ADPermission -Identity $OUPath ...
+# }
 
-$DelegCount = 0
-foreach ($Dept in $DelegationMap.Keys) {
-    $ManagerID = $DelegationMap[$Dept]
-    $Manager = Get-ADUser -Identity $ManagerID -Properties DisplayName, Title -ErrorAction SilentlyContinue
-    
-    if ($Manager) {
-        Write-Host "Delegation $Dept ->" -NoNewline
-        Write-Host " $($Manager.DisplayName) ($ManagerID)" -ForegroundColor Green
-        $DelegCount++
-    } else {
-        Write-Host "Delegation $Dept ->" -NoNewline
-        Write-Host " ERREUR (User introuvable)" -ForegroundColor Red
-    }
-}
+Write-Host "Delegation: A faire manuellement si necessaire" -ForegroundColor Yellow
 
-# Application permissions ACL
-$DeptOUMap = @{
-    "Commerciaux" = "OU=Commerciaux,DC=Belgique,DC=lan"
-    "Technique" = "OU=Technique,DC=Belgique,DC=lan"
-    "Informatique" = "OU=Informatique,DC=Belgique,DC=lan"
-    "Ressources humaines" = "OU=Ressources humaines,DC=Belgique,DC=lan"
-    "Direction" = "OU=Direction,DC=Belgique,DC=lan"
-    "R&D" = "OU=R&D,DC=Belgique,DC=lan"
-    "Marketting" = "OU=Marketting,DC=Belgique,DC=lan"
-    "Finances" = "OU=Finances,DC=Belgique,DC=lan"
-}
+# --- [6] Export des mots de passe ---
+Write-Host "`n[6/6] Export des mots de passe..." -ForegroundColor Yellow
 
-$PermCount = 0
-$PermFail = 0
+$OutputPath = "$env:USERPROFILE\Downloads\Passwords_Export_$(Get-Date -Format 'yyyy-MM-dd_HHmmss').csv"
+$PasswordLog | Export-Csv -Path $OutputPath -Delimiter ";" -Encoding UTF8 -NoTypeInformation
+Write-Host "OK: Mots de passe exportes: $OutputPath" -ForegroundColor Green
 
-foreach ($Dept in $DelegationMap.Keys) {
-    $ManagerID = $DelegationMap[$Dept]
-    $OUPath = $DeptOUMap[$Dept]
-    
-    $User = Get-ADUser -Filter "SamAccountName -eq '${ManagerID}'" -Properties SID -ErrorAction SilentlyContinue
-    if (-not $User) {
-        Write-Host "ERREUR: User $ManagerID non trouve" -ForegroundColor Red
-        $PermFail++
-        continue
-    }
-    
-    $OU = Get-ADOrganizationalUnit -Filter "distinguishedName -eq '${OUPath}'" -ErrorAction SilentlyContinue
-    if (-not $OU) {
-        Write-Host "ERREUR: OU $OUPath non trouvee pour $Dept" -ForegroundColor Red
-        $PermFail++
-        continue
-    }
-    
-    try {
-        $ACL = Get-Acl -Path "AD:\$($OU.DistinguishedName)"
-        $UserSID = $User.SID
-        
-        # Permission 1: Reset Password
-        $ResetPasswordGUID = [GUID]"00299570-246d-11d0-a768-00aa006e0529"
-        $ACE_Reset = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
-            $UserSID,
-            [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
-            [System.Security.AccessControl.AccessControlType]::Allow,
-            $ResetPasswordGUID,
-            [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
-        )
-        
-        # Permission 2: Modify All Properties
-        $ACE_Write = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
-            $UserSID,
-            [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty,
-            [System.Security.AccessControl.AccessControlType]::Allow,
-            [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
-        )
-        
-        $ACL.AddAccessRule($ACE_Reset)
-        $ACL.AddAccessRule($ACE_Write)
-        
-        Set-Acl -Path "AD:\$($OU.DistinguishedName)" -AclObject $ACL
-        
-        Write-Host "✓ ACL APPLIQUEE: ${ManagerID} -> ${Dept}" -ForegroundColor Green
-        $PermCount++
-        
-    } catch {
-        Write-Host "✗ ERREUR ACL ${ManagerID}: $_" -ForegroundColor Red
-        $PermFail++
-    }
-}
+# ════════════════════════════════════════════════════════════════════════════
+# BILAN FINAL
+# ════════════════════════════════════════════════════════════════════════════
 
-# --- [6] Verification finale ---
-Write-Host "`n[6/6] Verification finale..." -ForegroundColor Yellow
-
-Write-Host "Utilisateurs avec DisplayName vide:" -ForegroundColor Yellow
-$EmptyDisplayNames = Get-ADUser -Filter * -SearchBase "DC=Belgique,DC=lan" -Properties DisplayName | `
-    Where-Object { [string]::IsNullOrWhiteSpace($_.DisplayName) } | `
-    Measure-Object
-Write-Host "  Trouvs: $($EmptyDisplayNames.Count)" -ForegroundColor Green
-
-# --- BILAN FINAL ---
-Write-Host "`n========================================" -ForegroundColor Green
-Write-Host "CONFIGURATION COMPLETE" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Green
-Write-Host "Utilisateurs:" -ForegroundColor Green
-Write-Host "  - Crées: $UserCount" -ForegroundColor Green
-Write-Host "  - Erreurs: $ErrorCount" -ForegroundColor $(if($ErrorCount -gt 0){"Yellow"}else{"Green"})
-Write-Host "Délégations:" -ForegroundColor Green
-Write-Host "  - Configurées: $DelegCount" -ForegroundColor Green
-Write-Host "  - Permissions ACL appliquées: $PermCount" -ForegroundColor $(if($PermCount -eq 8){"Green"}else{"Yellow"})
-Write-Host "`n⚠️  IMPORTANT:" -ForegroundColor Yellow
-Write-Host "  - Mots de passe: $PasswordLogPath" -ForegroundColor Yellow
-Write-Host "  - À distribuer par mail chiffré uniquement" -ForegroundColor Red
-Write-Host "  - À SUPPRIMER après distribution" -ForegroundColor Red
-Write-Host "  - Les groupes et PSO doivent être créés séparément" -ForegroundColor Yellow
-Write-Host "========================================" -ForegroundColor Green
+Write-Host "`n════════════════════════════════════════" -ForegroundColor Green
+Write-Host "CONFIGURATION TERMINEE" -ForegroundColor Green
+Write-Host "════════════════════════════════════════" -ForegroundColor Green
+Write-Host "`nResume:" -ForegroundColor Cyan
+Write-Host "- OUs creees: $($OUStructure.Count) categories + $($SingleOUs.Count) simples" -ForegroundColor Green
+Write-Host "- Utilisateurs crees: $UserCount" -ForegroundColor Green
+Write-Host "- Erreurs: $ErrorCount" -ForegroundColor Yellow
+Write-Host "- Mots de passe: $OutputPath" -ForegroundColor Green
+Write-Host "`nNormalisation des accents:" -ForegroundColor Cyan
+Write-Host "- François -> francois" -ForegroundColor Green
+Write-Host "- Émilie -> emilie" -ForegroundColor Green
+Write-Host "- Çédric -> cedric" -ForegroundColor Green
+Write-Host "- Spaces/Tirets geres automatiquement" -ForegroundColor Green
+Write-Host "════════════════════════════════════════" -ForegroundColor Green
