@@ -26,16 +26,3 @@ Rename-Computer -NewName $ServerName -Force
 Write-Host "Le serveur va redémarrer dans 5 secondes..." -ForegroundColor Yellow
 Start-Sleep -Seconds 5
 Restart-Computer -Force
-
-# Pour namur, utiliser:
-# $ServerName = "DC-NAMUR"
-# $IPAddress = "172.25.0.1"
-# $PrefixLength = 24
-# $DNS = "172.28.1.1"
-# ════════════════════════════════════════════════════════════════════════════
-# pour mons :
-# $ServerName = "DC-MONS-RO"
-# $IPAddress = "172.28.2.1"
-# $PrefixLength = 24
-# $DNS = "172.25.0.1"
-# ════════════════════════════════════════════════════════════════════════════
