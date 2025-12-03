@@ -117,7 +117,7 @@ Write-Host "2. Essayer de copier un .docx dans C:\Share\..." -ForegroundColor Gr
 Write-Host "   -> Doit fonctionner normalement" -ForegroundColor Gray
 Write-Host "3. Verifier l'Event Log:" -ForegroundColor Gray
 Write-Host "   -> Event Viewer > Windows Logs > Application (Source: SRMSVC)" -ForegroundColor Gray
-Write-Host "      Ou: Get-EventLog -LogName Application -Source 'SRMSVC' -Newest 20" -ForegroundColor Gray
+Write-Host "      Ou: Get-EventLog -LogName Application -Source ""SRMSVC"" -Newest 20" -ForegroundColor Gray
 
 Write-Host "`nPour VOIR LES FILTRAGES ACTIFS:" -ForegroundColor Cyan
 Write-Host "Get-FsrmFileScreen | Select Path, Active, IncludeGroup" -ForegroundColor Gray

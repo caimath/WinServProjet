@@ -325,6 +325,22 @@ function Send-GmailMessage {
 $TestEmailSubject = "✅ TEST FSRM - Configuration des quotas reussie"
 $TestEmailBody = @"
 
+$SmtpService = Get-Service -Name SMTPSVC -ErrorAction SilentlyContinue
+if (-not $SmtpService) {
+    Write-Host "Installation du service SMTP..." -ForegroundColor Gray
+    Install-WindowsFeature SMTP-Server -IncludeManagementTools -ErrorAction Stop | Out-Null
+    Write-Host "OK: SMTP installe !" -ForegroundColor Green
+} else {
+    Write-Host "OK: Service SMTP deja present" -ForegroundColor Green
+}
+
+# Demarrer le service
+if ($SmtpService.Status -ne "Running") {
+    Write-Host "Demarrage du service SMTP..." -ForegroundColor Gray
+    Start-Service -Name SMTPSVC -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+
 Set-Service -Name SMTPSVC -StartupType Automatic
 
 
@@ -439,8 +455,13 @@ Write-Host "  4. Remplacer les variables en haut du script:" -ForegroundColor Cy
 Write-Host "     `$GmailAccount = 'votre.email@gmail.com'" -ForegroundColor Cyan
 Write-Host "     `$GmailAppPassword = 'xxxx xxxx xxxx xxxx'" -ForegroundColor Cyan
 
+# Mettre SMTPSVC en démarrage automatique
+Set-Service -Name SMTPSVC -StartupType Automatic
+
+# Vérifier l’état du service
 Get-Service SMTPSVC | Select-Object Name, Status, StartType
 
 Write-Host "`n════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "FIN DU SCRIPT - CONFIGURATION COMPLETEMENT OPERATIONNELLE" -ForegroundColor Cyan
 Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Cyan
+
