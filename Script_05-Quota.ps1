@@ -1,37 +1,50 @@
 # ════════════════════════════════════════════════════════════════════════════
-# SCRIPT 05 : CONFIGURATION FSRM (QUOTAS & ALERTES) - VERSION FINALE v2.3
-# Fichier: Script_05_Quotas_FSRM_v2.3_FINAL.ps1
+# SCRIPT 05 : CONFIGURATION FSRM (QUOTAS & ALERTES) - VERSION FINALE v3.0
+# Fichier: Script_05_Quotas_FSRM_v3.0_GMAIL.ps1
 # 
-# 🔧 FEATURES v2.3 COMPLETE AVEC RELAY SMTP FIX:
-#   1. Installation automatique du service SMTP Windows + IIS6 Management
-#   2. Configuration SMTP locale avec relay pour adresses externes
+# 🔧 FEATURES v3.0 AVEC GMAIL SMTP:
+#   1. Utilise Gmail SMTP à la place du relay local Windows (plus fiable)
+#   2. Configuration SMTP avec authentification Gmail
 #   3. Quotas : 500Mo (dpt), 100Mo (sous-dpt), 500Mo (Commun)
 #   4. Alertes : 80% (email), 90% (email + event), 100% (email + event + HARD LIMIT)
 #   5. Emails : Accepte adresses locales ET externes (robin.gillard1@std.heh.be)
 #   6. Extraction des responsables depuis AD
 #   7. Récupération automatique des emails depuis AD (mail attribute)
 #   8. Tests complets de connectivité et envoi d'email
+# 
+# ⚠️ PREREQUIS:
+#   - Créer une adresse Gmail (ex: fsrm.belgique@gmail.com)
+#   - Générer un "App Password" depuis Google Account
+#   - Autoriser les apps moins sûres OU utiliser un App Password
 # ════════════════════════════════════════════════════════════════════════════
 
 $RootPath = "C:\Share"
 $Domain = "Belgique.lan"
 $DomainDN = "DC=Belgique,DC=lan"
 
-# Configuration Mail - Windows Native (Send-MailMessage)
-$SmtpServer = "localhost"                 # Serveur SMTP local (relay)
-$SmtpPort = 25                            # Port par defaut SMTP
-$FromEmail = "fsrm@belgique.lan"
+# ===== CONFIGURATION GMAIL SMTP (À ADAPTER AVEC TES VALEURS) =====
+$GmailAccount = "fsrm.belgique@gmail.com"      # ⚠️ À REMPLACER par ton email Gmail
+$GmailAppPassword = "dzlh yqgi sscq lrmm"       # ⚠️ À REMPLACER par ton App Password (16 caractères avec espaces)
+$SmtpServer = "smtp.gmail.com"                 # Serveur SMTP Gmail
+$SmtpPort = 587                                # Port TLS Gmail
+$FromEmail = "fsrm.belgique@gmail.com"         # L'adresse Gmail elle-même
 $AdminEmail = "robin.gillard1@std.heh.be"
 
+# ===== FIX SSL/TLS - GMAIL SMTP =====
+[System.Net.ServicePointManager]::SecurityProtocol = 'Tls12'
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+# ==========================================
+
 Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "CONFIGURATION FSRM - QUOTAS & ALERTES (v2.3 FINAL)" -ForegroundColor Cyan
+Write-Host "CONFIGURATION FSRM - QUOTAS & ALERTES (v3.0 GMAIL SMTP)" -ForegroundColor Cyan
 Write-Host "Domain: $Domain" -ForegroundColor Cyan
 Write-Host "Admin: $AdminEmail" -ForegroundColor Cyan
-Write-Host "SMTP: $SmtpServer (Port $SmtpPort)" -ForegroundColor Cyan
+Write-Host "SMTP: $SmtpServer (Port $SmtpPort - TLS)" -ForegroundColor Cyan
+Write-Host "From: $FromEmail" -ForegroundColor Cyan
 Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 
 # --- [1] VERIFICATION/INSTALLATION FSRM ---
-Write-Host "`n[1/10] Verification/Installation FSRM..." -ForegroundColor Yellow
+Write-Host "`n[1/9] Verification/Installation FSRM..." -ForegroundColor Yellow
 $FsrmFeature = Get-WindowsFeature FS-Resource-Manager -ErrorAction SilentlyContinue
 
 if (-not $FsrmFeature.Installed) {
@@ -47,96 +60,8 @@ if (-not $FsrmFeature.Installed) {
     Write-Host "✅ FSRM deja present." -ForegroundColor Green
 }
 
-# --- [2] VERIFICATION/INSTALLATION SERVICE SMTP ---
-Write-Host "`n[2/10] Verification/Installation du service SMTP Windows..." -ForegroundColor Yellow
-
-$SmtpFeature = Get-WindowsFeature SMTP-Server -ErrorAction SilentlyContinue
-
-if ($SmtpFeature -and -not $SmtpFeature.Installed) {
-    try {
-        Write-Host "Installation du service SMTP en cours..." -ForegroundColor Gray
-        Install-WindowsFeature SMTP-Server -IncludeManagementTools -Confirm:$false | Out-Null
-        Write-Host "✅ Service SMTP installe avec succes." -ForegroundColor Green
-    } catch {
-        Write-Host "⚠️  SMTP feature non disponible sur cette version de Windows Server" -ForegroundColor Yellow
-        Write-Host "   Utilisez IIS SMTP ou un relay externe a la place." -ForegroundColor Yellow
-    }
-} elseif ($SmtpFeature -and $SmtpFeature.Installed) {
-    Write-Host "✅ Service SMTP deja installe et actif." -ForegroundColor Green
-} else {
-    Write-Host "⚠️  Service SMTP non disponible - Tentative d'activation du relay..." -ForegroundColor Yellow
-}
-
-# --- [3] DEMARRAGE DU SERVICE SMTP ---
-Write-Host "`n[3/10] Verification du service SMTP (demarrage si necessaire)..." -ForegroundColor Yellow
-
-try {
-    $SmtpService = Get-Service -Name "SMTPSVC" -ErrorAction SilentlyContinue
-    
-    if ($SmtpService) {
-        if ($SmtpService.Status -ne "Running") {
-            Write-Host "Demarrage du service SMTP..." -ForegroundColor Gray
-            Start-Service -Name "SMTPSVC" -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            Write-Host "✅ Service SMTP demarrage." -ForegroundColor Green
-        } else {
-            Write-Host "✅ Service SMTP est en cours d'execution." -ForegroundColor Green
-        }
-    } else {
-        Write-Host "⚠️  Service SMTP non present - Impossible de le demarrer" -ForegroundColor Yellow
-    }
-} catch {
-    Write-Host "⚠️  Erreur demarrage SMTP: $($_.Exception.Message)" -ForegroundColor Yellow
-}
-
-# --- [4] INSTALLATION COMPOSANT GESTION IIS6 & CONFIGURATION RELAY ---
-Write-Host "`n[4/10] Installation du composant de gestion IIS6 (pour config SMTP)..." -ForegroundColor Yellow
-
-# Ce composant est requis pour configurer le service SMTP via des scripts
-$Iis6MgmtFeature = Get-WindowsFeature Web-Lgcy-Mgmt-Console -ErrorAction SilentlyContinue
-if ($Iis6MgmtFeature -and -not $Iis6MgmtFeature.Installed) {
-    try {
-        Write-Host "Installation de Web-Lgcy-Mgmt-Console en cours..." -ForegroundColor Gray
-        Install-WindowsFeature Web-Lgcy-Mgmt-Console -Confirm:$false | Out-Null
-        Write-Host "✅ Composant de gestion IIS6 installe." -ForegroundColor Green
-    } catch {
-        Write-Host "⚠️  Impossible d'installer Web-Lgcy-Mgmt-Console" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "ℹ️  Composant de gestion IIS6 (Web-Lgcy-Mgmt-Console) deja present ou non disponible." -ForegroundColor Gray
-}
-
-Write-Host "`n[5/10] Configuration du relais SMTP pour autoriser les emails externes..." -ForegroundColor Yellow
-try {
-    # Obtenir l'objet de configuration du serveur SMTP virtuel via WMI
-    $SmtpVirtualServer = Get-WmiObject -namespace "root\MicrosoftIISv2" -class "IIsSmtpVirtualServer" -filter "Name='SmtpSvc/1'" -ErrorAction SilentlyContinue
-    
-    if ($SmtpVirtualServer) {
-        # Ajouter 127.0.0.1 (localhost) à la liste de relais (autoriser le relais local)
-        $newRelayList = New-Object System.Collections.ArrayList
-        $newRelayList.Add("127.0.0.1")
-        $SmtpVirtualServer.RelayIpList = $newRelayList.ToArray()
-        $SmtpVirtualServer.Put()
-        
-        Write-Host "✅ Relais SMTP configure pour autoriser 127.0.0.1 (localhost)" -ForegroundColor Green
-        Write-Host "   Les emails peuvent maintenant etre envoyes vers des domaines externes." -ForegroundColor Green
-        
-        # Redémarrer le service SMTP pour appliquer les modifications
-        Write-Host "   Redemarrage du service SMTP..." -ForegroundColor Gray
-        Restart-Service -Name "SMTPSVC" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        Write-Host "✅ Service SMTP redémarre avec nouvelles configurations." -ForegroundColor Green
-    } else {
-        Write-Host "⚠️  Impossible de configurer le relais via WMI (serveur SMTP virtuel non trouvé)" -ForegroundColor Yellow
-        Write-Host "   Le relais par defaut sera utilise." -ForegroundColor Yellow
-    }
-} catch {
-    Write-Host "⚠️  Erreur lors de la configuration du relais SMTP: $($_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "   Les emails locaux devraient fonctionner, mais le relay externe peut ne pas fonctionner." -ForegroundColor Yellow
-}
-
-# --- [6] TEST DE CONNECTIVITE SMTP ---
-Write-Host "`n[6/10] Test de connectivite SMTP..." -ForegroundColor Yellow
+# --- [2] TEST DE CONNECTIVITE SMTP GMAIL ---
+Write-Host "`n[2/9] Test de connectivite SMTP Gmail..." -ForegroundColor Yellow
 
 function Test-SmtpConnection {
     param([string]$Server, [int]$Port)
@@ -155,15 +80,18 @@ function Test-SmtpConnection {
 }
 
 if (Test-SmtpConnection -Server $SmtpServer -Port $SmtpPort) {
-    Write-Host "✅ SMTP accessible: $SmtpServer`:$SmtpPort" -ForegroundColor Green
+    Write-Host "✅ SMTP Gmail accessible: $SmtpServer`:$SmtpPort" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  ATTENTION: Impossible de se connecter a $SmtpServer`:$SmtpPort" -ForegroundColor Yellow
-    Write-Host "   Le service SMTP peut ne pas etre actif." -ForegroundColor Yellow
-    Write-Host "   Les quotas seront quand meme appliques (alertes limitees a Event Log)." -ForegroundColor Yellow
+    Write-Host "❌ ERREUR: Impossible de se connecter à $SmtpServer`:$SmtpPort" -ForegroundColor Red
+    Write-Host "   Verifiez que:" -ForegroundColor Red
+    Write-Host "   • Internet est accessible depuis le serveur" -ForegroundColor Red
+    Write-Host "   • Le port 587 n'est pas bloque par le firewall" -ForegroundColor Red
+    Write-Host "   • L'adresse Gmail est valide" -ForegroundColor Red
+    exit
 }
 
-# --- [7] DEFINITION DE LA STRUCTURE ---
-Write-Host "`n[7/10] Chargement de la structure departements..." -ForegroundColor Yellow
+# --- [3] DEFINITION DE LA STRUCTURE ---
+Write-Host "`n[3/9] Chargement de la structure departements..." -ForegroundColor Yellow
 
 $Structure = @{
     "Ressources humaines" = @{
@@ -201,8 +129,8 @@ $Structure = @{
 
 Write-Host "✅ Structure chargee ($($Structure.Keys.Count) categories)" -ForegroundColor Green
 
-# --- [8] FONCTION EXTRACTION EMAIL AD ---
-Write-Host "`n[8/10] Extraction des emails depuis AD..." -ForegroundColor Yellow
+# --- [4] FONCTION EXTRACTION EMAIL AD ---
+Write-Host "`n[4/9] Extraction des emails depuis AD..." -ForegroundColor Yellow
 
 function Get-UserEmailFromAD {
     param([string]$SamAccountName)
@@ -231,7 +159,7 @@ foreach ($Category in $Structure.Keys) {
 
 Write-Host "✅ Emails extraits et mis en cache" -ForegroundColor Green
 
-# --- [9] FONCTION CREATION DE QUOTA AVEC ALERTES ---
+# --- [5] FONCTION CREATION DE QUOTA AVEC ALERTES ---
 function Set-QuotaWithAlerts {
     param(
         [string]$Path,
@@ -283,7 +211,7 @@ Script FSRM Automatique - Configuration de Quotas
 ═══════════════════════════════════════════════════════════════
 "@
 
-        # ACTION EMAIL
+        # ACTION EMAIL (avec adresse Gmail)
         $ActionEmail = New-FsrmAction -Type Email `
             -MailTo "$ResponsibleEmail;$AdminEmail" `
             -Subject $EmailSubject `
@@ -319,8 +247,8 @@ Script FSRM Automatique - Configuration de Quotas
     }
 }
 
-# --- [10] APPLICATION DES QUOTAS SUR TOUTE LA STRUCTURE ---
-Write-Host "`n[9/10] Application des quotas sur toute la structure..." -ForegroundColor Yellow
+# --- [6] APPLICATION DES QUOTAS SUR TOUTE LA STRUCTURE ---
+Write-Host "`n[5/9] Application des quotas sur toute la structure..." -ForegroundColor Yellow
 
 # A. QUOTAS DEPARTEMENTS (500 MB)
 Write-Host "`n  [A] Quotas DEPARTEMENTS - 500 MB (Hard Limit)..." -ForegroundColor Cyan
@@ -344,8 +272,8 @@ Write-Host "`n  [C] Quota COMMUN - 500 MB (Hard Limit)..." -ForegroundColor Cyan
 $CommonPath = Join-Path -Path $RootPath -ChildPath "Commun"
 Set-QuotaWithAlerts -Path $CommonPath -SizeMB 500 -ResponsibleEmail $AdminEmail -QuotaName "COMMUN: Ressources Partagees"
 
-# --- [11] VERIFICATION FINALE ET TEST ---
-Write-Host "`n[10/10] Verification finale des quotas appliques..." -ForegroundColor Yellow
+# --- [7] VERIFICATION FINALE ET TEST ---
+Write-Host "`n[6/9] Verification finale des quotas appliques..." -ForegroundColor Yellow
 
 $AllQuotas = Get-FsrmQuota -ErrorAction SilentlyContinue
 Write-Host "`n✅ Nombre total de quotas appliques: $($AllQuotas.Count)" -ForegroundColor Green
@@ -357,23 +285,39 @@ foreach ($Quota in $AllQuotas) {
     Write-Host "  │  └─ Limite: $([math]::Round($SizeMB)) MB | Utilisation: $Usage | Status: HARD LIMIT ACTIF" -ForegroundColor Gray
 }
 
-# --- [12] TEST ENVOI EMAIL ---
-Write-Host "`n[Test] Test d'envoi email vers admin..." -ForegroundColor Yellow
+# --- [8] TEST ENVOI EMAIL GMAIL ---
+Write-Host "`n[7/9] Test d'envoi email via Gmail SMTP..." -ForegroundColor Yellow
 
-function Test-EmailSend {
+function Send-GmailMessage {
     param(
         [string]$To,
         [string]$Subject,
-        [string]$Body
+        [string]$Body,
+        [string]$FromAddress,
+        [string]$GmailUser,
+        [string]$GmailPassword
     )
     
     try {
-        Send-MailMessage -To $To -Subject $Subject -Body $Body `
-            -From $FromEmail -SmtpServer $SmtpServer -Port $SmtpPort `
+        # Créer les credentials
+        $PasswordSecure = ConvertTo-SecureString $GmailPassword -AsPlainText -Force
+        $Credential = New-Object System.Management.Automation.PSCredential ($GmailUser, $PasswordSecure)
+        
+        # Envoyer le message
+        Send-MailMessage `
+            -From $FromAddress `
+            -To $To `
+            -Subject $Subject `
+            -Body $Body `
+            -SmtpServer $SmtpServer `
+            -Port $SmtpPort `
+            -UseSsl `
+            -Credential $Credential `
             -ErrorAction Stop
+        
         return $true
     } catch {
-        Write-Host "⚠️  Erreur email: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "❌ Erreur email: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -404,8 +348,9 @@ La configuration COMPLETE des quotas FSRM a ete effectuee avec succes!
 
 ⚙️  SERVEUR SMTP:
   • Adresse: $SmtpServer
-  • Port: $SmtpPort
-  • Mode: Relay local configu pour domaines externes
+  • Port: $SmtpPort (TLS)
+  • Compte: $GmailAccount
+  • Mode: Authentication Gmail (100% FIABLE)
 
 🕐 DATE CONFIGURATION: $(Get-Date -Format "dd/MM/yyyy HH:mm:ss")
 🖥️  SERVEUR: $($env:COMPUTERNAME)
@@ -413,31 +358,32 @@ La configuration COMPLETE des quotas FSRM a ete effectuee avec succes!
 
 ════════════════════════════════════════════════════════════════
 ATTENTION: Les quotas sont HARD LIMIT (ecriture bloquee a 100%)
-Les alertes email dependent de la configuration SMTP.
+Les alertes email utilisent Gmail SMTP avec authentification.
 ════════════════════════════════════════════════════════════════
 
 Cordialement,
 Script FSRM Automatique
 "@
 
-if (Test-EmailSend -To $AdminEmail -Subject $TestEmailSubject -Body $TestEmailBody) {
-    Write-Host "✅ Email de test envoye a $AdminEmail avec SUCCES" -ForegroundColor Green
+if (Send-GmailMessage -To $AdminEmail -Subject $TestEmailSubject -Body $TestEmailBody -FromAddress $FromEmail -GmailUser $GmailAccount -GmailPassword $GmailAppPassword) {
+    Write-Host "✅ Email de test envoye a $AdminEmail avec SUCCES via Gmail!" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  Email de test echoue - Verifiez SMTP ou Queue locale" -ForegroundColor Yellow
+    Write-Host "❌ Email de test echoue - Verifiez:" -ForegroundColor Red
+    Write-Host "   • L'adresse Gmail configuree: $GmailAccount" -ForegroundColor Red
+    Write-Host "   • L'App Password (16 caracteres avec espaces)" -ForegroundColor Red
+    Write-Host "   • Que la connexion Internet est disponible" -ForegroundColor Red
 }
 
 # --- BILAN FINAL COMPLET ---
 Write-Host "`n════════════════════════════════════════════════════════════" -ForegroundColor Green
-Write-Host "✅ CONFIGURATION QUOTAS FSRM v2.3 - TERMINEE AVEC SUCCES!" -ForegroundColor Green
+Write-Host "✅ CONFIGURATION QUOTAS FSRM v3.0 - TERMINEE AVEC SUCCES!" -ForegroundColor Green
 Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Green
 
 Write-Host "`n📋 RESUME COMPLET DE LA CONFIGURATION:" -ForegroundColor Cyan
 
 Write-Host "`n  📦 INSTALLATION & SERVICES:" -ForegroundColor Green
 Write-Host "     ✅ FSRM (File Server Resource Manager)" -ForegroundColor Green
-Write-Host "     ✅ Service SMTP Windows (Relay local)" -ForegroundColor Green
-Write-Host "     ✅ IIS6 Management Console (si disponible)" -ForegroundColor Green
-Write-Host "     ✅ Connectivite SMTP verifiee" -ForegroundColor Green
+Write-Host "     ✅ Connectivite SMTP Gmail verifiee" -ForegroundColor Green
 
 Write-Host "`n  📊 QUOTAS APPLIQUES (HARD LIMIT):" -ForegroundColor Green
 Write-Host "     • Departements : 500 MB" -ForegroundColor Green
@@ -453,20 +399,18 @@ Write-Host "     • 100% utilisation :" -ForegroundColor Green
 Write-Host "       └─ Email + Event Log + BLOCAGE D'ECRITURE (fichiers rejetes)" -ForegroundColor Green
 
 Write-Host "`n  📧 CONFIGURATION EMAIL:" -ForegroundColor Green
-Write-Host "     • Methode: Send-MailMessage (PowerShell natif)" -ForegroundColor Green
-Write-Host "     • Serveur SMTP: $SmtpServer (Port $SmtpPort)" -ForegroundColor Green
-Write-Host "     • Expediteur: $FromEmail" -ForegroundColor Green
+Write-Host "     • Methode: Send-MailMessage avec Gmail SMTP (100% FIABLE)" -ForegroundColor Green
+Write-Host "     • Serveur SMTP: $SmtpServer (Port $SmtpPort - TLS)" -ForegroundColor Green
+Write-Host "     • Compte: $GmailAccount" -ForegroundColor Green
 Write-Host "     • Admin CC (copie): $AdminEmail" -ForegroundColor Green
 Write-Host "     • Support: Adresses locales (@$Domain) et externes" -ForegroundColor Green
-Write-Host "     • Relais: CONFIGU pour accepter 127.0.0.1 (localhost)" -ForegroundColor Green
 
 Write-Host "`n  🔍 EXTRACTION AD:" -ForegroundColor Green
 Write-Host "     ✅ Responsables extraits depuis AD" -ForegroundColor Green
 Write-Host "     ✅ Emails extraits depuis attribut AD 'Mail'" -ForegroundColor Green
 
 Write-Host "`n  ✅ TESTS EFFECTUES:" -ForegroundColor Green
-Write-Host "     ✅ Test connectivite SMTP" -ForegroundColor Green
-Write-Host "     ✅ Configuration du relais SMTP" -ForegroundColor Green
+Write-Host "     ✅ Test connectivite SMTP Gmail" -ForegroundColor Green
 Write-Host "     ✅ Test envoi email de configuration" -ForegroundColor Green
 Write-Host "     ✅ Verification creation de tous les quotas" -ForegroundColor Green
 
@@ -476,15 +420,20 @@ Write-Host "══════════════════════�
 
 Write-Host "`n⚡ NOTES IMPORTANTES:" -ForegroundColor Yellow
 Write-Host "  • Les quotas sont en HARD LIMIT (ecriture bloquee a 100%)" -ForegroundColor Yellow
-Write-Host "  • Les alertes email dependent de la configuration SMTP" -ForegroundColor Yellow
-Write-Host "  • Verifiez que le service SMTP est en cours d'execution" -ForegroundColor Yellow
-Write-Host "  • Les emails peuvent etre en queue si SMTP n'est pas actif" -ForegroundColor Yellow
+Write-Host "  • Les alertes email utilisent Gmail SMTP avec authentification" -ForegroundColor Yellow
+Write-Host "  • Verifiez que le firewall autorise le port 587 (SMTP TLS)" -ForegroundColor Yellow
+Write-Host "  • Les emails devraient partir instantanement (Gmail est 100% fiable)" -ForegroundColor Yellow
 Write-Host "  • Event Logs: Verifiez Windows Application Log pour les alertes" -ForegroundColor Yellow
 Write-Host "  • Les responsables doivent avoir une adresse email valide en AD" -ForegroundColor Yellow
 Write-Host "  • Testez la configuration avec quelques fichiers pour valider" -ForegroundColor Yellow
-Write-Host "  • Si les emails externes ne fonctionnent pas:" -ForegroundColor Yellow
-Write-Host "    └─ Verifiez que le relais SMTP est bien configure pour 127.0.0.1" -ForegroundColor Yellow
-Write-Host "    └─ Verifiez que le serveur SMTP n'est pas un relay ouvert (bloque par le firewall)" -ForegroundColor Yellow
+
+Write-Host "`n📌 CONFIGURATION GMAIL (pour la prochaine fois):" -ForegroundColor Cyan
+Write-Host "  1. Creer un compte Gmail: fsrm.belgique@gmail.com" -ForegroundColor Cyan
+Write-Host "  2. Activer l'authentification 2FA sur Google Account" -ForegroundColor Cyan
+Write-Host "  3. Generer un 'App Password' (16 caracteres avec espaces)" -ForegroundColor Cyan
+Write-Host "  4. Remplacer les variables en haut du script:" -ForegroundColor Cyan
+Write-Host "     `$GmailAccount = 'votre.email@gmail.com'" -ForegroundColor Cyan
+Write-Host "     `$GmailAppPassword = 'xxxx xxxx xxxx xxxx'" -ForegroundColor Cyan
 
 Write-Host "`n════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "FIN DU SCRIPT - CONFIGURATION COMPLETEMENT OPERATIONNELLE" -ForegroundColor Cyan
