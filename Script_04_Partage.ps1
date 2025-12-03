@@ -252,6 +252,104 @@ if (-not $ExistingDir) {
     }
 }
 
+Write-Host "`n[4b/11] Configuration Fine-Grained Password Policy (PSO) pour Direction...`n" -ForegroundColor Magenta
+
+# Variables PSO
+$PSOName = "PSO_Direction_15chars"
+$PSOPrecedence = 1  # Plus bas = priorité plus haute
+$MinPasswordLength = 15
+$MinComplexity = $true
+$MaxPasswordAge = 0  # jours
+$MinPasswordAge = 1   # jour
+$PasswordHistoryCount = 24  # nombre de anciens mots de passe à mémoriser
+
+# Vérifier si la PSO existe déjà
+$ExistingPSO = Get-ADFineGrainedPasswordPolicy -Filter "Name -eq '$PSOName'" -ErrorAction SilentlyContinue
+
+if (-not $ExistingPSO) {
+    Write-Host "✅ Creation de la PSO: $PSOName" -ForegroundColor Cyan
+    
+    try {
+        # Créer la PSO avec les paramètres stricts pour Direction
+        New-ADFineGrainedPasswordPolicy `
+            -Name $PSOName `
+            -Precedence $PSOPrecedence `
+            -DisplayName "PSO Direction - 15 caractères minimum" `
+            -Description "Fine-Grained Password Policy pour groupe Direction - Cahier des charges compliance" `
+            -MinPasswordLength $MinPasswordLength `
+            -ComplexityEnabled $MinComplexity `
+            -MaxPasswordAge (New-TimeSpan -Days $MaxPasswordAge) `
+            -MinPasswordAge (New-TimeSpan -Days $MinPasswordAge) `
+            -PasswordHistoryCount $PasswordHistoryCount `
+            -LockoutDuration (New-TimeSpan -Minutes 30) `
+            -LockoutObservationWindow (New-TimeSpan -Minutes 30) `
+            -LockoutThreshold 5 `
+            -ProtectedFromAccidentalDeletion $true `
+            -Confirm:$false
+        
+        Write-Host "✅ PSO creee avec succes" -ForegroundColor Green
+        Write-Host "   ├─ Precedence: $PSOPrecedence (haute priorite)" -ForegroundColor Gray
+        Write-Host "   ├─ Min password: $MinPasswordLength caracteres" -ForegroundColor Gray
+        Write-Host "   ├─ Complexite: ACTIVEE" -ForegroundColor Gray
+        Write-Host "   ├─ Max age password: $MaxPasswordAge jours" -ForegroundColor Gray
+        Write-Host "   ├─ Historique: $PasswordHistoryCount mots de passe" -ForegroundColor Gray
+        Write-Host "   └─ Lockout: 5 tentatives / 30 minutes" -ForegroundColor Gray
+        
+    } catch {
+        Write-Host "❌ ERREUR creation PSO: $($_.Exception.Message)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "✅ PSO existe deja: $PSOName" -ForegroundColor Green
+}
+
+# Appliquer la PSO au groupe Direction
+Write-Host "`n✅ Application de la PSO au groupe GG_Direction..." -ForegroundColor Cyan
+
+try {
+    # Récupérer le groupe Direction
+    $GGDirection = Get-ADGroup -Filter "SamAccountName -eq 'GG_Direction'" -ErrorAction SilentlyContinue
+    
+    if ($GGDirection) {
+        # Récupérer la PSO
+        $PSO = Get-ADFineGrainedPasswordPolicy -Filter "Name -eq '$PSOName'" -ErrorAction SilentlyContinue
+        
+        if ($PSO) {
+            # Appliquer la PSO au groupe
+            Add-ADFineGrainedPasswordPolicySubject -Identity $PSO -Subjects $GGDirection -Confirm:$false
+            Write-Host "✅ PSO appliquee au groupe GG_Direction" -ForegroundColor Green
+        } else {
+            Write-Host "⚠️  PSO non trouvee pour application" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "⚠️  Groupe GG_Direction non trouve" -ForegroundColor Yellow
+    }
+    
+} catch {
+    Write-Host "⚠️  Note: PSO deja appliquee ou groupe vide - $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# Vérification de la PSO appliquée
+Write-Host "`n✅ Verification des PSO actuelles:" -ForegroundColor Cyan
+
+try {
+    $AllPSO = Get-ADFineGrainedPasswordPolicy -Filter * -ErrorAction SilentlyContinue
+    
+    foreach ($Policy in $AllPSO) {
+        Write-Host "  ├─ PSO: $($Policy.Name)" -ForegroundColor Gray
+        Write-Host "  │  ├─ Precedence: $($Policy.Precedence)" -ForegroundColor Gray
+        Write-Host "  │  ├─ Min chars: $($Policy.MinPasswordLength)" -ForegroundColor Gray
+        Write-Host "  │  ├─ Complexite: $($Policy.ComplexityEnabled)" -ForegroundColor Gray
+        Write-Host "  │  ├─ Max age: $($Policy.MaxPasswordAge.Days) jours" -ForegroundColor Gray
+        Write-Host "  │  └─ Appliquees a: $($(Get-ADFineGrainedPasswordPolicySubject -Identity $Policy -ErrorAction SilentlyContinue | Measure-Object).Count) groupes" -ForegroundColor Gray
+    }
+} catch {
+    Write-Host "  ⚠️  Impossible d'afficher les PSO: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# ════════════════════════════════════════════════════════════════════════════
+# FIN AJOUT PSO
+# ════════════════════════════════════════════════════════════════════════════
+
 # --- [5] CREER LES GROUPES LOCAUX (G > L) ---
 Write-Host "`n[5/11] Creation des groupes locaux de domaine (G > L)..." -ForegroundColor Yellow
 
@@ -766,3 +864,20 @@ Write-Host "ADMINISTRATEUR a repris le contrôle total (FullControl) sur tous le
 Write-Host "`n════════════════════════════════════════" -ForegroundColor Green
 Write-Host "✅ Script v17 FORCE ADMIN - PRET POUR EXECUTION!" -ForegroundColor Green
 Write-Host "════════════════════════════════════════" -ForegroundColor Green
+
+# --- [11] VERIFICATION PSO APPLIQUEE ---
+Write-Host "`n[11/11] Verification finale PSO Direction...`n" -ForegroundColor Yellow
+
+$GGDir = Get-ADGroup -Filter "SamAccountName -eq 'GG_Direction'" -ErrorAction SilentlyContinue
+
+if ($GGDir) {
+    $PSO = Get-ADFineGrainedPasswordPolicy -Identity "PSO_Direction_15chars"
+    $PSO | Select-Object Name, MinPasswordLength, ComplexityEnabled, MaxPasswordAge, Precedence
+
+} else {
+    Write-Host "⚠️  Groupe GG_Direction non trouve" -ForegroundColor Yellow
+}
+
+Write-Host "`n════════════════════════════════════════════════════════════" -ForegroundColor Green
+Write-Host "CONFIGURATION COMPLETE - AVEC PSO DIRECTION" -ForegroundColor Green
+Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Green

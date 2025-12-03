@@ -324,6 +324,10 @@ function Send-GmailMessage {
 
 $TestEmailSubject = "✅ TEST FSRM - Configuration des quotas reussie"
 $TestEmailBody = @"
+
+Set-Service -Name SMTPSVC -StartupType Automatic
+
+
 ════════════════════════════════════════════════════════════════
   CONFIRMATION - CONFIGURATION QUOTAS FSRM COMPLETE
 ════════════════════════════════════════════════════════════════
@@ -434,6 +438,8 @@ Write-Host "  3. Generer un 'App Password' (16 caracteres avec espaces)" -Foregr
 Write-Host "  4. Remplacer les variables en haut du script:" -ForegroundColor Cyan
 Write-Host "     `$GmailAccount = 'votre.email@gmail.com'" -ForegroundColor Cyan
 Write-Host "     `$GmailAppPassword = 'xxxx xxxx xxxx xxxx'" -ForegroundColor Cyan
+
+Get-Service SMTPSVC | Select-Object Name, Status, StartType
 
 Write-Host "`n════════════════════════════════════════════════════════════" -ForegroundColor Cyan
 Write-Host "FIN DU SCRIPT - CONFIGURATION COMPLETEMENT OPERATIONNELLE" -ForegroundColor Cyan
