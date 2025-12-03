@@ -1,23 +1,82 @@
 # ════════════════════════════════════════════════════════════════════════════
-# SCRIPT COMPLET : STRUCTURE + GROUPES + AGDLP + PERMISSIONS (v4 - FINAL)
-# Respecte les consignes tout en maintenant AGDLP
-# FIX: Structure corrigée avec les vrais SamAccountName du CSV (Prenom.Nom)
+# SCRIPT COMPLET : STRUCTURE + GROUPES + AGDLP + PERMISSIONS (v17 - TAKE OWNERSHIP)
+# 
+# 🔧 CORRECTIONS V17 (FORCE ADMIN):
+#   1. Prise de possession (TakeOwnership) avant application des droits
+#   2. Ajout explicite de "Administrators" en FullControl sur chaque dossier
+#   3. Activation du privilège SeRestorePrivilege pour forcer l'écriture
 # ════════════════════════════════════════════════════════════════════════════
 
 $RootPath = "C:\Share"
 $Domain = "Belgique.lan"
 $DomainDN = "DC=Belgique,DC=lan"
 $CSVPath = "C:\users\Administrator\Downloads\Employes-Liste6_ADAPTEE.csv"
+$ComputerName = $env:COMPUTERNAME
+$AdminGroup = "BUILTIN\Administrators"
 
 Write-Host "════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "AGDLP COMPLET - Structure + Groupes + Permissions (v4 - FINAL)" -ForegroundColor Cyan
+Write-Host "AGDLP COMPLET - v17 (FORCE ADMIN ACCESS)" -ForegroundColor Cyan
 Write-Host "Domain: $Domain" -ForegroundColor Cyan
+Write-Host "Computer: $ComputerName" -ForegroundColor Cyan
 Write-Host "════════════════════════════════════════" -ForegroundColor Cyan
+
+# --- [0] PRE-REQUIS : ACTIVER PRIVILEGES ---
+Write-Host "`n[0/11] Activation des privileges administrateur..." -ForegroundColor Yellow
+$Definition = @"
+using System;
+using System.Runtime.InteropServices;
+public class TokenManipulator
+{
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    internal static extern bool AdjustTokenPrivileges(IntPtr htok, bool disall, ref TokPriv1Luid newst, int len, IntPtr prev, IntPtr relen);
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    internal static extern IntPtr GetCurrentProcess();
+    [DllImport("advapi32.dll", ExactSpelling = true, SetLastError = true)]
+    internal static extern bool OpenProcessToken(IntPtr h, int acc, ref IntPtr phtok);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    internal static extern bool LookupPrivilegeValue(string host, string name, ref long pluid);
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    internal struct TokPriv1Luid
+    {
+        public int Count;
+        public long Luid;
+        public int Attr;
+    }
+    internal const int SE_PRIVILEGE_ENABLED = 0x00000002;
+    internal const int TOKEN_QUERY = 0x00000008;
+    internal const int TOKEN_ADJUST_PRIVILEGES = 0x00000020;
+    public static bool AddPrivilege(string privilege)
+    {
+        try
+        {
+            bool retVal;
+            TokPriv1Luid tp;
+            IntPtr hproc = GetCurrentProcess();
+            IntPtr htok = IntPtr.Zero;
+            retVal = OpenProcessToken(hproc, TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, ref htok);
+            tp.Count = 1;
+            tp.Luid = 0;
+            tp.Attr = SE_PRIVILEGE_ENABLED;
+            retVal = LookupPrivilegeValue(null, privilege, ref tp.Luid);
+            retVal = AdjustTokenPrivileges(htok, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+            return retVal;
+        }
+        catch (Exception ex)
+        {
+            throw ex;
+        }
+    }
+}
+"@
+Add-Type $Definition
+[TokenManipulator]::AddPrivilege("SeRestorePrivilege") | Out-Null
+[TokenManipulator]::AddPrivilege("SeBackupPrivilege") | Out-Null
+[TokenManipulator]::AddPrivilege("SeTakeOwnershipPrivilege") | Out-Null
+Write-Host "Privileges SeRestore/SeBackup/SeTakeOwnership actives." -ForegroundColor Green
 
 # --- [1] CREER LES DOSSIERS ---
-Write-Host "`n[1/7] Creation de la structure de dossiers..." -ForegroundColor Yellow
+Write-Host "`n[1/11] Creation de la structure de dossiers..." -ForegroundColor Yellow
 
-# STRUCTURE CORRIGEE : Format Prenom.Nom
 $Structure = @{
     "Ressources humaines" = @{
         "Gestion du personnel" = "romain.marcel"
@@ -29,7 +88,7 @@ $Structure = @{
     }
     "Informatique" = @{
         "Développement" = "adrien.bavouakenfack"
-        "HotLine"       = "rayan.aimant"
+        "HotLine"       = "victor.quicken"
         "Systèmes"      = "arnaud.baisagurova"
     }
     "R&D" = @{
@@ -52,20 +111,17 @@ $Structure = @{
     }
 }
 
-# Creer racine
 if (-not (Test-Path $RootPath)) {
     New-Item -ItemType Directory -Path $RootPath -Force | Out-Null
     Write-Host "Dossier racine cree: $RootPath"
 }
 
-# Creer Commun
 $CommonPath = Join-Path $RootPath "Commun"
 if (-not (Test-Path $CommonPath)) {
     New-Item -ItemType Directory -Path $CommonPath -Force | Out-Null
     Write-Host "Dossier cree: Commun"
 }
 
-# Creer categories et sous-depts
 foreach ($Category in $Structure.Keys) {
     $CategoryPath = Join-Path $RootPath $Category
     
@@ -84,22 +140,65 @@ foreach ($Category in $Structure.Keys) {
     }
 }
 
-Write-Host "Dossiers crees: OK"
+# --- FONCTION FORCE PERMISSIONS ---
+function Force-AdminAccess {
+    param([string]$Path)
+    
+    Write-Host "  🔧 Force Admin Access sur: $(Split-Path -Leaf $Path)" -ForegroundColor Gray
+    
+    try {
+        # 1. Prendre possession (Take Ownership)
+        $Acl = Get-Acl $Path
+        $AdminUser = New-Object System.Security.Principal.NTAccount("Administrators")
+        $Acl.SetOwner($AdminUser)
+        Set-Acl -Path $Path -AclObject $Acl
+        
+        # 2. Ajouter Full Control pour Admins
+        $Acl = Get-Acl $Path
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "Administrators",
+            "FullControl",
+            "ContainerInherit, ObjectInherit",
+            "None",
+            "Allow"
+        )
+        $Acl.AddAccessRule($AccessRule)
+        Set-Acl -Path $Path -AclObject $Acl
+        
+    } catch {
+        Write-Host "    ⚠️ Erreur Force Admin: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Appliquer Force Admin sur TOUTE la structure
+Force-AdminAccess -Path $RootPath
+Force-AdminAccess -Path $CommonPath
+
+foreach ($Category in $Structure.Keys) {
+    $CategoryPath = Join-Path $RootPath $Category
+    Force-AdminAccess -Path $CategoryPath
+    
+    foreach ($SubDept in $Structure[$Category].Keys) {
+        $SubPath = Join-Path $CategoryPath $SubDept
+        Force-AdminAccess -Path $SubPath
+    }
+}
+
+Write-Host "Dossiers et accès Admin: OK"
 
 # --- [2] CHARGER LES UTILISATEURS ---
-Write-Host "`n[2/7] Chargement des utilisateurs..." -ForegroundColor Yellow
+Write-Host "`n[2/11] Chargement des utilisateurs..." -ForegroundColor Yellow
 $Users = Import-Csv -Path $CSVPath -Delimiter ";" -Encoding UTF8
 Write-Host "Utilisateurs charges: $($Users.Count)"
 
-# --- [CORRECTION] VALIDER LES RESPONSABLES DANS AD ---
-Write-Host "`n[2.5/7] Validation des responsables dans AD..." -ForegroundColor Yellow
+# --- [3] VALIDER LES RESPONSABLES DANS AD ---
+Write-Host "`n[3/11] Validation des responsables dans AD..." -ForegroundColor Yellow
 
 $ValidManagers = @{}
 foreach ($Category in $Structure.Keys) {
     foreach ($SubDept in $Structure[$Category].Keys) {
         $ManagerFromStructure = $Structure[$Category][$SubDept]
         
-        # Chercher le user dans AD
         $AdUser = $null
         try {
             $AdUser = Get-ADUser -Filter "SamAccountName -eq '$ManagerFromStructure'" -ErrorAction SilentlyContinue
@@ -115,8 +214,8 @@ foreach ($Category in $Structure.Keys) {
     }
 }
 
-# --- [3] CREER LES GROUPES GLOBAUX (A > G) ---
-Write-Host "`n[3/7] Creation des groupes globaux (A > G)..." -ForegroundColor Yellow
+# --- [4] CREER LES GROUPES GLOBAUX (A > G) ---
+Write-Host "`n[4/11] Creation des groupes globaux (A > G)..." -ForegroundColor Yellow
 
 foreach ($Category in $Structure.Keys) {
     foreach ($SubDept in $Structure[$Category].Keys) {
@@ -139,7 +238,6 @@ foreach ($Category in $Structure.Keys) {
     }
 }
 
-# Direction
 $ExistingDir = Get-ADGroup -Filter "SamAccountName -eq 'GG_Direction'" -ErrorAction SilentlyContinue
 if (-not $ExistingDir) {
     try {
@@ -154,69 +252,16 @@ if (-not $ExistingDir) {
     }
 }
 
-# --- [4] CREER LES GROUPES LOCAUX (G > L) ---
-Write-Host "`n[4/7] Creation des groupes locaux de domaine (G > L)..." -ForegroundColor Yellow
+# --- [5] CREER LES GROUPES LOCAUX (G > L) ---
+Write-Host "`n[5/11] Creation des groupes locaux de domaine (G > L)..." -ForegroundColor Yellow
 
-foreach ($Category in $Structure.Keys) {
-    foreach ($SubDept in $Structure[$Category].Keys) {
-        # Groupe pour les users du sous-dept (RW)
-        $DLGroupRW = "DL_${Category}_${SubDept}_RW"
-        $ExistingRW = Get-ADGroup -Filter "SamAccountName -eq '$DLGroupRW'" -ErrorAction SilentlyContinue
-        if (-not $ExistingRW) {
-            try {
-                New-ADGroup -SamAccountName $DLGroupRW -Name $DLGroupRW `
-                    -GroupScope DomainLocal -GroupCategory Security `
-                    -DisplayName "DL - $Category - $SubDept - RW" `
-                    -Description "Groupe local: R/W sur $SubDept" `
-                    -Path $DomainDN -Confirm:$false
-                Write-Host "Groupe local cree: $DLGroupRW"
-            } catch {
-                Write-Host "ERREUR creation DL RW: $DLGroupRW - $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        
-        # Groupe pour les autres (Read)
-        $DLGroupR = "DL_${Category}_${SubDept}_R"
-        $ExistingR = Get-ADGroup -Filter "SamAccountName -eq '$DLGroupR'" -ErrorAction SilentlyContinue
-        if (-not $ExistingR) {
-            try {
-                New-ADGroup -SamAccountName $DLGroupR -Name $DLGroupR `
-                    -GroupScope DomainLocal -GroupCategory Security `
-                    -DisplayName "DL - $Category - $SubDept - Read" `
-                    -Description "Groupe local: Lecture sur $SubDept" `
-                    -Path $DomainDN -Confirm:$false
-                Write-Host "Groupe local cree: $DLGroupR"
-            } catch {
-                Write-Host "ERREUR creation DL R: $DLGroupR - $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-    }
-    
-    # Groupe pour la categorie (tous lisent)
-    $DLCategoryR = "DL_${Category}_R"
-    $ExistingCat = Get-ADGroup -Filter "SamAccountName -eq '$DLCategoryR'" -ErrorAction SilentlyContinue
-    if (-not $ExistingCat) {
-        try {
-            New-ADGroup -SamAccountName $DLCategoryR -Name $DLCategoryR `
-                -GroupScope DomainLocal -GroupCategory Security `
-                -DisplayName "DL - $Category - Read" `
-                -Description "Groupe local: Lecture sur $Category" `
-                -Path $DomainDN -Confirm:$false
-            Write-Host "Groupe local cree: $DLCategoryR"
-        } catch {
-            Write-Host "ERREUR creation DL Category: $DLCategoryR - $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-}
-
-# Groupes Commun
-$ExistingCommunR = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_R'" -ErrorAction SilentlyContinue
-if (-not $ExistingCommunR) {
+$DLCommonRead = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_R'" -ErrorAction SilentlyContinue
+if (-not $DLCommonRead) {
     try {
         New-ADGroup -SamAccountName "DL_Commun_R" -Name "DL_Commun_R" `
             -GroupScope DomainLocal -GroupCategory Security `
-            -DisplayName "DL - Commun - Read" `
-            -Description "Groupe local: Lecture Commun" `
+            -DisplayName "Domain Local - Commun (Lecture)" `
+            -Description "Groupe pour lecture Commun" `
             -Path $DomainDN -Confirm:$false
         Write-Host "Groupe local cree: DL_Commun_R"
     } catch {
@@ -224,13 +269,13 @@ if (-not $ExistingCommunR) {
     }
 }
 
-$ExistingCommunRW = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_RW'" -ErrorAction SilentlyContinue
-if (-not $ExistingCommunRW) {
+$DLCommonRW = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_RW'" -ErrorAction SilentlyContinue
+if (-not $DLCommonRW) {
     try {
         New-ADGroup -SamAccountName "DL_Commun_RW" -Name "DL_Commun_RW" `
             -GroupScope DomainLocal -GroupCategory Security `
-            -DisplayName "DL - Commun - RW" `
-            -Description "Groupe local: R/W Commun (responsables)" `
+            -DisplayName "Domain Local - Commun (R/W)" `
+            -Description "Groupe pour R/W Commun" `
             -Path $DomainDN -Confirm:$false
         Write-Host "Groupe local cree: DL_Commun_RW"
     } catch {
@@ -238,304 +283,486 @@ if (-not $ExistingCommunRW) {
     }
 }
 
-# Groupe Direction Full
-$ExistingDirFull = Get-ADGroup -Filter "SamAccountName -eq 'DL_Direction_Full'" -ErrorAction SilentlyContinue
-if (-not $ExistingDirFull) {
-    try {
-        New-ADGroup -SamAccountName "DL_Direction_Full" -Name "DL_Direction_Full" `
-            -GroupScope DomainLocal -GroupCategory Security `
-            -DisplayName "DL - Direction - Full" `
-            -Description "Groupe local: Full access Direction" `
-            -Path $DomainDN -Confirm:$false
-        Write-Host "Groupe local cree: DL_Direction_Full"
-    } catch {
-        Write-Host "ERREUR creation DL_Direction_Full - $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-# --- [5] AJOUTER UTILISATEURS AUX GROUPES GLOBAUX (A > G) ---
-Write-Host "`n[5/7] Ajout des utilisateurs aux groupes globaux (A > G)..." -ForegroundColor Yellow
-
-$AllUsers = Get-ADUser -Filter "Enabled -eq 'True'" -SearchBase $DomainDN | Where-Object { $_.SamAccountName -notmatch "^krbtgt|Administrator|Guest" }
-$ProcessedCount = 0
-
-foreach ($User in $AllUsers) {
-    $SamName = $User.SamAccountName
-    $OU = $User.DistinguishedName
-    
-    # Extraire sous-dept et categorie de l'OU
-    $OUParts = $OU -split "," | Where-Object { $_ -like "OU=*" }
-    
-    if ($OUParts.Count -ge 2) {
-        $SubDept = ($OUParts[0] -replace "OU=", "").Trim()
-        $Category = ($OUParts[1] -replace "OU=", "").Trim()
-        
-        $GlobalGroupName = "GG_$SubDept"
-        
-        try {
-            $GlobalGroup = Get-ADGroup -Filter "SamAccountName -eq '$GlobalGroupName'" -ErrorAction SilentlyContinue
-            
-            if ($GlobalGroup) {
-                $IsMember = Get-ADGroupMember -Identity $GlobalGroupName -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $SamName }
-                
-                if (-not $IsMember) {
-                    Add-ADGroupMember -Identity $GlobalGroupName -Members $SamName -Confirm:$false -ErrorAction SilentlyContinue
-                    $ProcessedCount++
-                }
-            }
-        } catch { }
-    } elseif ($OUParts.Count -eq 1) {
-        # OU simple (Direction, Recherche, etc.)
-        $SubDept = ($OUParts[0] -replace "OU=", "").Trim()
-        $GlobalGroupName = "GG_$SubDept"
-        
-        try {
-            $GlobalGroup = Get-ADGroup -Filter "SamAccountName -eq '$GlobalGroupName'" -ErrorAction SilentlyContinue
-            
-            if ($GlobalGroup) {
-                $IsMember = Get-ADGroupMember -Identity $GlobalGroupName -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $SamName }
-                
-                if (-not $IsMember) {
-                    Add-ADGroupMember -Identity $GlobalGroupName -Members $SamName -Confirm:$false -ErrorAction SilentlyContinue
-                    $ProcessedCount++
-                }
-            }
-        } catch { }
-    }
-}
-
-# Direction
-$DirectionUsers = $AllUsers | Where-Object { $_.DistinguishedName -like "*OU=Direction*" }
-foreach ($User in $DirectionUsers) {
-    try {
-        $IsMember = Get-ADGroupMember -Identity "GG_Direction" -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $User.SamAccountName }
-        if (-not $IsMember) {
-            Add-ADGroupMember -Identity "GG_Direction" -Members $User.SamAccountName -Confirm:$false -ErrorAction SilentlyContinue
-            $ProcessedCount++
-        }
-    } catch { }
-}
-
-Write-Host "Utilisateurs ajoutes aux groupes globaux: $ProcessedCount"
-
-# --- [6] AJOUTER GROUPES GLOBAUX AUX GROUPES LOCAUX (G > L) ---
-Write-Host "`n[6/7] Ajout des groupes globaux aux groupes locaux (G > L)..." -ForegroundColor Yellow
-
-foreach ($Category in $Structure.Keys) {
-    $SubDepts = $Structure[$Category].Keys
-    
-    foreach ($SubDept in $SubDepts) {
-        $GlobalGroupName = "GG_$SubDept"
-        $DLGroupRW = "DL_${Category}_${SubDept}_RW"
-        $DLGroupR = "DL_${Category}_${SubDept}_R"
-        $DLCategoryR = "DL_${Category}_R"
-        
-        # Ajouter au groupe RW (users du sous-dept modifient)
-        try {
-            $IsMemberRW = Get-ADGroupMember -Identity $DLGroupRW -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $GlobalGroupName }
-            if (-not $IsMemberRW) {
-                Add-ADGroupMember -Identity $DLGroupRW -Members $GlobalGroupName -Confirm:$false -ErrorAction SilentlyContinue
-                Write-Host "$GlobalGroupName -> $DLGroupRW"
-            }
-        } catch { }
-        
-        # Ajouter les autres sous-depts au groupe Read
-        foreach ($OtherSubDept in $SubDepts) {
-            if ($OtherSubDept -ne $SubDept) {
-                $OtherGlobalGroupName = "GG_$OtherSubDept"
-                try {
-                    $IsMemberR = Get-ADGroupMember -Identity $DLGroupR -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $OtherGlobalGroupName }
-                    if (-not $IsMemberR) {
-                        Add-ADGroupMember -Identity $DLGroupR -Members $OtherGlobalGroupName -Confirm:$false -ErrorAction SilentlyContinue
-                    }
-                } catch { }
-            }
-        }
-        
-        # Ajouter au groupe Category Read (tous lisent la categorie)
-        try {
-            $IsMemberCat = Get-ADGroupMember -Identity $DLCategoryR -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $GlobalGroupName }
-            if (-not $IsMemberCat) {
-                Add-ADGroupMember -Identity $DLCategoryR -Members $GlobalGroupName -Confirm:$false -ErrorAction SilentlyContinue
-            }
-        } catch { }
-    }
-}
-
-# Ajouter Direction au groupe Direction Full
-try {
-    $IsMemberDir = Get-ADGroupMember -Identity "DL_Direction_Full" -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq "GG_Direction" }
-    if (-not $IsMemberDir) {
-        Add-ADGroupMember -Identity "DL_Direction_Full" -Members "GG_Direction" -Confirm:$false -ErrorAction SilentlyContinue
-        Write-Host "GG_Direction -> DL_Direction_Full"
-    }
-} catch { }
-
-# Ajouter responsables valides à DL_Commun_RW
-Write-Host "`nAjout des responsables a DL_Commun_RW..."
+Write-Host "`nCreation des DL pour les sous-depts (R ET RW)..." -ForegroundColor Cyan
 foreach ($Category in $Structure.Keys) {
     foreach ($SubDept in $Structure[$Category].Keys) {
-        $ManagerKey = "$Category|$SubDept"
-        $Manager = $ValidManagers[$ManagerKey]
         
-        if ($Manager) {
+        $DLSubDeptRead = "DL_$($SubDept)_R"
+        $DLSubDeptReadExisting = Get-ADGroup -Filter "SamAccountName -eq '$DLSubDeptRead'" -ErrorAction SilentlyContinue
+        
+        if (-not $DLSubDeptReadExisting) {
             try {
-                $IsMemberCommun = Get-ADGroupMember -Identity "DL_Commun_RW" -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $Manager }
-                if (-not $IsMemberCommun) {
-                    Add-ADGroupMember -Identity "DL_Commun_RW" -Members $Manager -Confirm:$false -ErrorAction SilentlyContinue
-                    Write-Host "OK $Manager -> DL_Commun_RW" -ForegroundColor Green
-                }
+                New-ADGroup -SamAccountName $DLSubDeptRead -Name $DLSubDeptRead `
+                    -GroupScope DomainLocal -GroupCategory Security `
+                    -DisplayName "Domain Local - $SubDept (Read)" `
+                    -Description "Groupe lecture pour $SubDept" `
+                    -Path $DomainDN -Confirm:$false
+                Write-Host "Groupe local cree: $DLSubDeptRead"
             } catch {
-                Write-Host "ERREUR ajout $Manager : $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "ERREUR creation $DLSubDeptRead - $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        $DLSubDeptRW = "DL_$($SubDept)_RW"
+        $DLSubDeptRWExisting = Get-ADGroup -Filter "SamAccountName -eq '$DLSubDeptRW'" -ErrorAction SilentlyContinue
+        
+        if (-not $DLSubDeptRWExisting) {
+            try {
+                New-ADGroup -SamAccountName $DLSubDeptRW -Name $DLSubDeptRW `
+                    -GroupScope DomainLocal -GroupCategory Security `
+                    -DisplayName "Domain Local - $SubDept (R/W)" `
+                    -Description "Groupe R/W pour $SubDept" `
+                    -Path $DomainDN -Confirm:$false
+                Write-Host "Groupe local cree: $DLSubDeptRW"
+            } catch {
+                Write-Host "ERREUR creation $DLSubDeptRW - $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        
+        $ManagerGroupName = "GG_Managers_$SubDept"
+        $ManagerGroupExisting = Get-ADGroup -Filter "SamAccountName -eq '$ManagerGroupName'" -ErrorAction SilentlyContinue
+        
+        if (-not $ManagerGroupExisting) {
+            try {
+                New-ADGroup -SamAccountName $ManagerGroupName -Name $ManagerGroupName `
+                    -GroupScope Global -GroupCategory Security `
+                    -DisplayName "Global - Managers $SubDept" `
+                    -Description "Groupe des responsables de $SubDept" `
+                    -Path $DomainDN -Confirm:$false
+                Write-Host "Groupe global managers cree: $ManagerGroupName"
+            } catch {
+                Write-Host "ERREUR creation $ManagerGroupName - $($_.Exception.Message)" -ForegroundColor Red
             }
         }
     }
 }
 
-Write-Host "Groupes globaux ajoutes aux groupes locaux: OK"
+# --- [6] REMPLIR LES GROUPES GLOBAUX AVEC LES UTILISATEURS ---
+Write-Host "`n[6/11] Remplissage des groupes globaux avec utilisateurs..." -ForegroundColor Yellow
 
-# --- [7] APPLIQUER LES PERMISSIONS NTFS (L > Permissions) ---
-Write-Host "`n[7/7] Application des permissions NTFS (L > Permissions)..." -ForegroundColor Yellow
+function Remove-Accents {
+    param([string]$InputString)
+    $Result = $InputString
+    $Result = $Result.Replace('À', 'A').Replace('Á', 'A').Replace('Â', 'A').Replace('Ã', 'A').Replace('Ä', 'A').Replace('Å', 'A')
+    $Result = $Result.Replace('È', 'E').Replace('É', 'E').Replace('Ê', 'E').Replace('Ë', 'E')
+    $Result = $Result.Replace('Ì', 'I').Replace('Í', 'I').Replace('Î', 'I').Replace('Ï', 'I')
+    $Result = $Result.Replace('Ñ', 'N')
+    $Result = $Result.Replace('Ò', 'O').Replace('Ó', 'O').Replace('Ô', 'O').Replace('Õ', 'O').Replace('Ö', 'O')
+    $Result = $Result.Replace('Ù', 'U').Replace('Ú', 'U').Replace('Û', 'U').Replace('Ü', 'U')
+    $Result = $Result.Replace('Ç', 'C').Replace('Ý', 'Y').Replace('Æ', 'AE').Replace('Œ', 'OE')
+    $Result = $Result.Replace('à', 'a').Replace('á', 'a').Replace('â', 'a').Replace('ã', 'a').Replace('ä', 'a').Replace('å', 'a')
+    $Result = $Result.Replace('è', 'e').Replace('é', 'e').Replace('ê', 'e').Replace('ë', 'e')
+    $Result = $Result.Replace('ì', 'i').Replace('í', 'i').Replace('î', 'i').Replace('ï', 'i')
+    $Result = $Result.Replace('ñ', 'n')
+    $Result = $Result.Replace('ò', 'o').Replace('ó', 'o').Replace('ô', 'o').Replace('õ', 'o').Replace('ö', 'o')
+    $Result = $Result.Replace('ù', 'u').Replace('ú', 'u').Replace('û', 'u').Replace('ü', 'u')
+    $Result = $Result.Replace('ç', 'c').Replace('ý', 'y').Replace('ß', 'ss').Replace('æ', 'ae').Replace('œ', 'oe')
+    $Result = $Result -replace '\s+', ''
+    $Result = $Result -replace '[^a-zA-Z0-9._-]', ''
+    return $Result
+}
 
-function Grant-FolderPermission {
-    param(
-        [string]$Path,
-        [string]$GroupName,
-        [System.Security.AccessControl.FileSystemRights]$Rights
-    )
+foreach ($User in $Users) {
+    $Prenom = $User.Prenom.Trim()
+    $Nom = $User.Nom.Trim()
+    $Dept = $User.Departement.Trim()
     
-    try {
-        $Acl = Get-Acl -Path $Path
-        $ExistingRule = $Acl.Access | Where-Object { $_.IdentityReference -like "*$GroupName" -and $_.IsInherited -eq $false }
-        
-        if (-not $ExistingRule) {
-            $Ace = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                "$Domain\$GroupName",
-                $Rights,
-                "ContainerInherit,ObjectInherit",
-                "None",
-                "Allow"
-            )
-            $Acl.AddAccessRule($Ace)
-            Set-Acl -Path $Path -AclObject $Acl
-            return $true
+    $BaseName = (Remove-Accents -InputString "$Prenom.$Nom").ToLower()
+    
+    if ($BaseName.Length -gt 20) {
+        $BaseName = $BaseName.Substring(0, 20)
+    }
+    
+    $SamName = $BaseName
+    $AdUser = Get-ADUser -Filter "SamAccountName -eq '$SamName'" -ErrorAction SilentlyContinue
+    
+    if ($AdUser) {
+        if ($Dept.Contains("/")) {
+            $Parts = $Dept.Split("/")
+            $SubDept = $Parts[0].Trim()
+            $Category = $Parts[1].Trim()
+        } else {
+            $SubDept = $Dept
+            $Category = $null
         }
-        return $false
-    } catch {
-        return $false
+        
+        $GGName = "GG_$SubDept"
+        $GG = Get-ADGroup -Filter "SamAccountName -eq '$GGName'" -ErrorAction SilentlyContinue
+        
+        if ($GG) {
+            $IsMember = Get-ADGroupMember -Identity $GG -ErrorAction SilentlyContinue | Where-Object { $_.SamAccountName -eq $SamName }
+            if (-not $IsMember) {
+                try {
+                    Add-ADGroupMember -Identity $GG -Members $AdUser -Confirm:$false
+                    Write-Host "User ajoute a $GGName : $SamName" -ForegroundColor Green
+                } catch {
+                    Write-Host "ERREUR ajout $SamName a $GGName : $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+        }
     }
 }
 
-# Appliquer sur categories et sous-depts
+Write-Host "`nAjout des responsables aux GG_Managers..." -ForegroundColor Cyan
+foreach ($Category in $Structure.Keys) {
+    foreach ($SubDept in $Structure[$Category].Keys) {
+        $ManagerSamName = $ValidManagers["$Category|$SubDept"]
+        
+        if ($ManagerSamName) {
+            $ManagerUser = Get-ADUser -Filter "SamAccountName -eq '$ManagerSamName'" -ErrorAction SilentlyContinue
+            
+            if ($ManagerUser) {
+                $ManagerGroupName = "GG_Managers_$SubDept"
+                $ManagerGroup = Get-ADGroup -Filter "SamAccountName -eq '$ManagerGroupName'" -ErrorAction SilentlyContinue
+                
+                if ($ManagerGroup) {
+                    try {
+                        Add-ADGroupMember -Identity $ManagerGroup -Members $ManagerUser -Confirm:$false -ErrorAction SilentlyContinue
+                        Write-Host "Manager ajoute a $ManagerGroupName : $ManagerSamName" -ForegroundColor Green
+                    } catch {
+                        # Silencieux
+                    }
+                }
+            }
+        }
+    }
+}
+
+Write-Host "`nAjout de GG_Direction a DL_Commun_RW..." -ForegroundColor Cyan
+$GGDir = Get-ADGroup -Filter "SamAccountName -eq 'GG_Direction'" -ErrorAction SilentlyContinue
+$DLComRW = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_RW'" -ErrorAction SilentlyContinue
+
+if ($GGDir -and $DLComRW) {
+    try {
+        Add-ADGroupMember -Identity $DLComRW -Members $GGDir -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "GG_Direction ajoute a DL_Commun_RW" -ForegroundColor Green
+    } catch {
+        Write-Host "GG_Direction deja dans DL_Commun_RW" -ForegroundColor Gray
+    }
+}
+
+# --- [7] CREER LE PARTAGE AUTOMATIQUE (SMB SHARE) ---
+Write-Host "`n[7/11] Creation du partage SMB automatique..." -ForegroundColor Yellow
+
+$ShareName = "Share"
+$ShareExisting = Get-SmbShare -Name $ShareName -ErrorAction SilentlyContinue
+
+if (-not $ShareExisting) {
+    try {
+        New-SmbShare -Name $ShareName -Path $RootPath `
+            -ChangeAccess "Everyone" `
+            -Description "Partage fichiers departements - Acces reseau via EVERYONE" `
+            -Confirm:$false
+        Write-Host "Partage SMB cree: \\$ComputerName\$ShareName -> $RootPath" -ForegroundColor Green
+        Write-Host "  Acces SMB: Change + Read pour Everyone" -ForegroundColor Green
+    } catch {
+        Write-Host "ERREUR creation partage SMB: $($_.Exception.Message)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "Partage SMB existe deja: \\$ComputerName\$ShareName" -ForegroundColor Gray
+}
+
+# --- [8a] PERMISSIONS NTFS - DOSSIERS PARENTS ---
+Write-Host "`n[8a/11] Permissions sur dossiers PARENTS (v17 FIX)..." -ForegroundColor Magenta
+
+function Set-ParentPermissions {
+    param([string]$Path, [hashtable]$SubDepts)
+    
+    $PathExists = Test-Path -Path $Path -ErrorAction SilentlyContinue
+    if (-not $PathExists) { return }
+    
+    try {
+        $Acl = Get-Acl -Path $Path -ErrorAction Stop
+        if ($null -eq $Acl) { return }
+        
+        $Acl.SetAccessRuleProtection($true, $false)
+        
+        # Nettoyer mais GARDER Administrator/SYSTEM
+        $AclToKeep = @()
+        foreach ($AccessRule in $Acl.Access) {
+            if ($AccessRule.IdentityReference.Value -like "*SYSTEM*" -or `
+                $AccessRule.IdentityReference.Value -like "*Administrateurs*" -or `
+                $AccessRule.IdentityReference.Value -like "*Administrators*" -or `
+                $AccessRule.IdentityReference.Value -like "*CREATOR OWNER*") {
+                $AclToKeep += $AccessRule
+            }
+        }
+        
+        $NewAcl = New-Object System.Security.AccessControl.DirectorySecurity
+        $NewAcl.SetAccessRuleProtection($true, $false)
+        
+        foreach ($Rule in $AclToKeep) { $NewAcl.AddAccessRule($Rule) }
+        
+        # FORCE ADMIN FULL CONTROL EXPLICIT
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "Administrators",
+            "FullControl",
+            "ContainerInherit, ObjectInherit",
+            "None",
+            "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+
+        foreach ($SubDept in $SubDepts.Keys) {
+            $DLRead = "DL_$($SubDept)_R"
+            $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "$Domain\$DLRead", "ReadAndExecute", "None", "None", "Allow"
+            )
+            $NewAcl.AddAccessRule($AccessRule)
+        }
+        
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "$Domain\GG_Direction", "Modify", "None", "None", "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+        
+        Set-Acl -Path $Path -AclObject $NewAcl
+        Write-Host "  ✅ Permissions appliquees sur parent: $(Split-Path -Leaf $Path)" -ForegroundColor Green
+        
+    } catch {
+        Write-Host "  ❌ ERREUR: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
 foreach ($Category in $Structure.Keys) {
     $CategoryPath = Join-Path $RootPath $Category
-    $DLCategoryR = "DL_${Category}_R"
-    
-    # Permission categorie: tous lisent (via groupe category)
-    Grant-FolderPermission -Path $CategoryPath -GroupName $DLCategoryR -Rights "Read" | Out-Null
-    
-    # Permission categorie: responsables du sous-dept en R/W
-    foreach ($SubDept in $Structure[$Category].Keys) {
-        $ManagerKey = "$Category|$SubDept"
-        $Manager = $ValidManagers[$ManagerKey]
-        
-        if ($Manager) {
-            Grant-FolderPermission -Path $CategoryPath -GroupName $Manager -Rights "Modify" | Out-Null
+    Write-Host "  Parent: $($Category)" -ForegroundColor Cyan
+    Set-ParentPermissions -Path $CategoryPath -SubDepts $Structure[$Category]
+}
+
+# --- [8b/11] PERMISSIONS NTFS - DOSSIER COMMUN ---
+Write-Host "`n[8b/11] Permissions sur dossier COMMUN..." -ForegroundColor Yellow
+
+if ((Test-Path $CommonPath -ErrorAction SilentlyContinue)) {
+    try {
+        $Acl = Get-Acl $CommonPath -ErrorAction Stop
+        if ($Acl) {
+            $Acl.SetAccessRuleProtection($true, $false)
+            
+            $AclToKeep = @()
+            foreach ($AccessRule in $Acl.Access) {
+                if ($AccessRule.IdentityReference.Value -like "*SYSTEM*" -or `
+                    $AccessRule.IdentityReference.Value -like "*Administrateurs*" -or `
+                    $AccessRule.IdentityReference.Value -like "*Administrators*" -or `
+                    $AccessRule.IdentityReference.Value -like "*CREATOR OWNER*") {
+                    $AclToKeep += $AccessRule
+                }
+            }
+            
+            $NewAcl = New-Object System.Security.AccessControl.DirectorySecurity
+            $NewAcl.SetAccessRuleProtection($true, $false)
+            foreach ($Rule in $AclToKeep) { $NewAcl.AddAccessRule($Rule) }
+            
+            # FORCE ADMIN
+            $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "Administrators", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow"
+            )
+            $NewAcl.AddAccessRule($AccessRule)
+            
+            $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "$Domain\DL_Commun_R", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow"
+            )
+            $NewAcl.AddAccessRule($AccessRule)
+            
+            $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                "$Domain\DL_Commun_RW", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow"
+            )
+            $NewAcl.AddAccessRule($AccessRule)
+            
+            Set-Acl -Path $CommonPath -AclObject $NewAcl
+            Write-Host "  ✅ Commun - Permissions appliquees" -ForegroundColor Green
         }
+    } catch {
+        Write-Host "  ❌ ERREUR Commun: $($_.Exception.Message)" -ForegroundColor Red
     }
+}
+
+# --- [8c/11] PERMISSIONS NTFS - DOSSIERS ENFANTS ---
+Write-Host "`n[8c/11] Permissions sur dossiers ENFANTS (v17 FIX)..." -ForegroundColor Magenta
+
+function Set-ChildPermissions {
+    param([string]$Path, [string]$SubDept)
     
-    # Permission categorie: Direction modifie
-    Grant-FolderPermission -Path $CategoryPath -GroupName "DL_Direction_Full" -Rights "Modify" | Out-Null
+    $PathExists = Test-Path -Path $Path -ErrorAction SilentlyContinue
+    if (-not $PathExists) { return }
     
-    Write-Host "Permissions appliquees: $Category"
+    try {
+        $Acl = Get-Acl -Path $Path -ErrorAction Stop
+        if ($null -eq $Acl) { return }
+        
+        $Acl.SetAccessRuleProtection($true, $false)
+        
+        $AclToKeep = @()
+        foreach ($AccessRule in $Acl.Access) {
+            if ($AccessRule.IdentityReference.Value -like "*SYSTEM*" -or `
+                $AccessRule.IdentityReference.Value -like "*Administrateurs*" -or `
+                $AccessRule.IdentityReference.Value -like "*Administrators*" -or `
+                $AccessRule.IdentityReference.Value -like "*CREATOR OWNER*") {
+                $AclToKeep += $AccessRule
+            }
+        }
+        
+        $NewAcl = New-Object System.Security.AccessControl.DirectorySecurity
+        $NewAcl.SetAccessRuleProtection($true, $false)
+        foreach ($Rule in $AclToKeep) { $NewAcl.AddAccessRule($Rule) }
+        
+        # FORCE ADMIN FULL CONTROL
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "Administrators", "FullControl", "ContainerInherit, ObjectInherit", "None", "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+        
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "$Domain\DL_$($SubDept)_R", "ReadAndExecute", "ContainerInherit, ObjectInherit", "None", "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+        
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "$Domain\DL_$($SubDept)_RW", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+        
+        $AccessRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            "$Domain\GG_Direction", "Modify", "ContainerInherit, ObjectInherit", "None", "Allow"
+        )
+        $NewAcl.AddAccessRule($AccessRule)
+        
+        Set-Acl -Path $Path -AclObject $NewAcl
+        Write-Host "    ✅ $($SubDept)" -ForegroundColor Green
+        
+    } catch {
+        Write-Host "    ❌ ERREUR $($SubDept): $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+foreach ($Category in $Structure.Keys) {
+    $CategoryPath = Join-Path $RootPath $Category
+    Write-Host "  Enfants de $($Category)..." -ForegroundColor Cyan
     
     foreach ($SubDept in $Structure[$Category].Keys) {
         $SubPath = Join-Path $CategoryPath $SubDept
-        $DLGroupRW = "DL_${Category}_${SubDept}_RW"
-        $DLGroupR = "DL_${Category}_${SubDept}_R"
-        
-        # Users du sous-dept: Modify
-        Grant-FolderPermission -Path $SubPath -GroupName $DLGroupRW -Rights "Modify" | Out-Null
-        # Autres sous-depts: Read
-        Grant-FolderPermission -Path $SubPath -GroupName $DLGroupR -Rights "Read" | Out-Null
-        # Direction: Full
-        Grant-FolderPermission -Path $SubPath -GroupName "DL_Direction_Full" -Rights "Modify" | Out-Null
-        
-        Write-Host "Permissions appliquees: $Category\$SubDept"
+        Set-ChildPermissions -Path $SubPath -SubDept $SubDept
     }
 }
 
-# Permissions Commun
-Grant-FolderPermission -Path $CommonPath -GroupName "DL_Commun_R" -Rights "Read" | Out-Null
-Grant-FolderPermission -Path $CommonPath -GroupName "DL_Commun_RW" -Rights "Modify" | Out-Null
-Grant-FolderPermission -Path $CommonPath -GroupName "DL_Direction_Full" -Rights "Modify" | Out-Null
-Write-Host "Permissions appliquees: Commun"
+# --- [9] REMPLIR LES DL - CROSS-DEPARTMENT PERMISSIONS ---
+Write-Host "`n[9/11] Remplissage des groupes locaux (DL) - CROSS-DEPARTMENT..." -ForegroundColor Yellow
 
-# --- NOUVEAU : DOSSIER DIRECTION (CONFIDENTIEL) ---
-Write-Host "`n[7.5/7] Creation dossier Direction (CONFIDENTIEL)..." -ForegroundColor Yellow
-
-$DirConfPath = Join-Path $RootPath "Direction"
-if (-not (Test-Path $DirConfPath)) {
-    New-Item -ItemType Directory -Path $DirConfPath -Force | Out-Null
-    Write-Host "Dossier cree: Direction"
+foreach ($Category in $Structure.Keys) {
+    foreach ($SubDept in $Structure[$Category].Keys) {
+        $GGName = "GG_$SubDept"
+        $DLNameRW = "DL_$($SubDept)_RW"
+        
+        $GG = Get-ADGroup -Filter "SamAccountName -eq '$GGName'" -ErrorAction SilentlyContinue
+        $DLRW = Get-ADGroup -Filter "SamAccountName -eq '$DLNameRW'" -ErrorAction SilentlyContinue
+        
+        if ($GG -and $DLRW) {
+            try {
+                Add-ADGroupMember -Identity $DLRW -Members $GG -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Host "GG $GGName ajoute a DL_$($SubDept)_RW ✅ (ECRITURE)" -ForegroundColor Green
+            } catch { }
+        }
+        
+        foreach ($OtherSubDept in $Structure[$Category].Keys) {
+            if ($OtherSubDept -ne $SubDept) {
+                $DLNameOtherR = "DL_$($OtherSubDept)_R"
+                $DLOtherR = Get-ADGroup -Filter "SamAccountName -eq '$DLNameOtherR'" -ErrorAction SilentlyContinue
+                
+                if ($GG -and $DLOtherR) {
+                    try {
+                        Add-ADGroupMember -Identity $DLOtherR -Members $GG -Confirm:$false -ErrorAction SilentlyContinue
+                        Write-Host "GG $GGName ajoute a DL_$($OtherSubDept)_R ✅" -ForegroundColor Green
+                    } catch { }
+                }
+            }
+        }
+        
+        $ManagerGroupName = "GG_Managers_$SubDept"
+        $ManagerGroup = Get-ADGroup -Filter "SamAccountName -eq '$ManagerGroupName'" -ErrorAction SilentlyContinue
+        
+        if ($ManagerGroup -and $DLRW) {
+            try {
+                Add-ADGroupMember -Identity $DLRW -Members $ManagerGroup -Confirm:$false -ErrorAction SilentlyContinue
+                Write-Host "$ManagerGroupName ajoute a DL_$($SubDept)_RW ✅" -ForegroundColor Green
+            } catch { }
+        }
+        
+        foreach ($OtherSubDept in $Structure[$Category].Keys) {
+            if ($OtherSubDept -ne $SubDept) {
+                $DLNameOtherRW = "DL_$($OtherSubDept)_RW"
+                $DLOtherRW = Get-ADGroup -Filter "SamAccountName -eq '$DLNameOtherRW'" -ErrorAction SilentlyContinue
+                
+                if ($ManagerGroup -and $DLOtherRW) {
+                    try {
+                        Add-ADGroupMember -Identity $DLOtherRW -Members $ManagerGroup -Confirm:$false -ErrorAction SilentlyContinue
+                        Write-Host "$ManagerGroupName ajoute a DL_$($OtherSubDept)_RW ✅" -ForegroundColor Green
+                    } catch { }
+                }
+            }
+        }
+    }
 }
 
-try {
-    # Casser l'héritage pour Direction (seulement Direction + Admins)
-    $Acl = Get-Acl -Path $DirConfPath
-    $Acl.SetAccessRuleProtection($true, $false)
-    Set-Acl -Path $DirConfPath -AclObject $Acl
-    
-    # SYSTEM (par SID)
-    $SysAce = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "S-1-5-18",  # SID de SYSTEM
-        "FullControl",
-        "ContainerInherit,ObjectInherit",
-        "None",
-        "Allow"
-    )
-    $Acl = Get-Acl -Path $DirConfPath
-    $Acl.AddAccessRule($SysAce)
-    Set-Acl -Path $DirConfPath -AclObject $Acl
-    
-    # Administrators (par SID)
-    $AdminAce = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        "S-1-5-32-544",  # SID d'Administrators
-        "FullControl",
-        "ContainerInherit,ObjectInherit",
-        "None",
-        "Allow"
-    )
-    $Acl = Get-Acl -Path $DirConfPath
-    $Acl.AddAccessRule($AdminAce)
-    Set-Acl -Path $DirConfPath -AclObject $Acl
-    
-    # Direction: FullControl
-    Grant-FolderPermission -Path $DirConfPath -GroupName "DL_Direction_Full" -Rights "FullControl" | Out-Null
-    
-    Write-Host "Permissions appliquees: Direction (CONFIDENTIEL - Direction Only)" -ForegroundColor Green
-} catch {
-    Write-Host "ERREUR configuration Direction: $($_.Exception.Message)" -ForegroundColor Red
+Write-Host "`nAjout de TOUS les GG a DL_Commun_R..." -ForegroundColor Cyan
+$DLComR = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_R'" -ErrorAction SilentlyContinue
+
+if ($DLComR) {
+    foreach ($Category in $Structure.Keys) {
+        foreach ($SubDept in $Structure[$Category].Keys) {
+            $GGName = "GG_$SubDept"
+            $GG = Get-ADGroup -Filter "SamAccountName -eq '$GGName'" -ErrorAction SilentlyContinue
+            
+            if ($GG) {
+                try {
+                    Add-ADGroupMember -Identity $DLComR -Members $GG -Confirm:$false -ErrorAction SilentlyContinue
+                    Write-Host "GG $GGName ajoute a DL_Commun_R ✅" -ForegroundColor Green
+                } catch { }
+            }
+        }
+    }
 }
 
-# --- BILAN ---
+Write-Host "`nAjout de TOUS les GG_Managers a DL_Commun_RW..." -ForegroundColor Cyan
+$DLComRW = Get-ADGroup -Filter "SamAccountName -eq 'DL_Commun_RW'" -ErrorAction SilentlyContinue
+
+if ($DLComRW) {
+    foreach ($Category in $Structure.Keys) {
+        foreach ($SubDept in $Structure[$Category].Keys) {
+            $ManagerGroupName = "GG_Managers_$SubDept"
+            $ManagerGroup = Get-ADGroup -Filter "SamAccountName -eq '$ManagerGroupName'" -ErrorAction SilentlyContinue
+            
+            if ($ManagerGroup) {
+                try {
+                    Add-ADGroupMember -Identity $DLComRW -Members $ManagerGroup -Confirm:$false -ErrorAction SilentlyContinue
+                    Write-Host "$ManagerGroupName ajoute a DL_Commun_RW ✅" -ForegroundColor Green
+                } catch { }
+            }
+        }
+    }
+}
+
+# --- [10] VERIFICATION FINALE ---
+Write-Host "`n[10/11] Verification finale des permissions..." -ForegroundColor Yellow
+
+foreach ($Category in $Structure.Keys) {
+    $CategoryPath = Join-Path $RootPath $Category
+    if ((Test-Path $CategoryPath -ErrorAction SilentlyContinue)) {
+        $Acl = Get-Acl $CategoryPath -ErrorAction SilentlyContinue
+        if ($Acl) {
+            Write-Host "`n$Category - Permissions actuelles:" -ForegroundColor Cyan
+            $Acl.Access | Where-Object { $_.IdentityReference -notlike "*SYSTEM*" -and $_.IdentityReference -notlike "*Administrateurs*" -and $_.IdentityReference -notlike "*Administrators*" -and $_.IdentityReference -notlike "*CREATOR OWNER*" } | ForEach-Object {
+                Write-Host "  ✅ $($_.IdentityReference) - $($_.FileSystemRights) - Inheritance: $($_.InheritanceFlags)" -ForegroundColor Green
+            }
+        }
+    }
+}
+
+# --- BILAN FINAL ---
 Write-Host "`n════════════════════════════════════════" -ForegroundColor Green
-Write-Host "CONFIGURATION TERMINEE" -ForegroundColor Green
+Write-Host "CONFIGURATION TERMINEE (v17 - TAKE OWNERSHIP)" -ForegroundColor Green
 Write-Host "════════════════════════════════════════" -ForegroundColor Green
-Write-Host "`nChaines AGDLP appliquees:" -ForegroundColor Cyan
-Write-Host "- A (Account) : Utilisateurs dans leurs OUs" -ForegroundColor Green
-Write-Host "- G (Global) : Users dans GG_* (par sous-dept)" -ForegroundColor Green
-Write-Host "- L (Local) : GG_* dans DL_* (par categorie)" -ForegroundColor Green
-Write-Host "- P (Permission) : DL_* sur dossiers NTFS" -ForegroundColor Green
-Write-Host "`nConsignes respectees:" -ForegroundColor Cyan
-Write-Host "- Dossier DEPT: Tous en R, Responsables en R/W, Direction en R/W" -ForegroundColor Green
-Write-Host "- Dossier SOUS-DEPT: Users en R/W, Autres en R, Direction en R/W" -ForegroundColor Green
-Write-Host "- Dossier COMMUN: Tous en R, Responsables en R/W" -ForegroundColor Green
-Write-Host "- Dossier DIRECTION: Direction UNIQUEMENT (FullControl)" -ForegroundColor Green
-Write-Host "`nStructure finale:" -ForegroundColor Cyan
-Write-Host "- Dossiers: Tous crees automatiquement" -ForegroundColor Green
-Write-Host "- Groupes: Globaux et Locaux crees" -ForegroundColor Green
-Write-Host "- Users: Ajoutes aux groupes (AGDLP)" -ForegroundColor Green
-Write-Host "- Permissions: Appliquees via groupes locaux (L > P)" -ForegroundColor Green
-Write-Host "- Responsables: Valides depuis AD + format Prenom.Nom + SIDs pour groupes speciaux" -ForegroundColor Green
+Write-Host "`nArchitecture FINALE v17:" -ForegroundColor Cyan
+Write-Host "ADMINISTRATEUR a repris le contrôle total (FullControl) sur tous les dossiers." -ForegroundColor Red
+Write-Host "`n════════════════════════════════════════" -ForegroundColor Green
+Write-Host "✅ Script v17 FORCE ADMIN - PRET POUR EXECUTION!" -ForegroundColor Green
 Write-Host "════════════════════════════════════════" -ForegroundColor Green

@@ -1,7 +1,7 @@
-# SCRIPT 03-04 FUSIONNE REDUIT : IMPORT UTILISATEURS + CONFIGURATION AD
-# Combine : Création OUs + Utilisateurs + Mots de passe aléatoires + Délégation
+# SCRIPT 03-04 FUSIONNE COMPLET : IMPORT UTILISATEURS + CONFIG AD + DELEGATIONS + LOGON HOURS
+# Combine : Création OUs + Utilisateurs + Mots de passe aléatoires + Délégation + Horaires
 # PowerShell 5.1 COMPATIBLE
-# FIX : Normalisation des accents et caractères spéciaux dans les logins
+# FIX : Normalisation des accents + ChangePasswordAtLogon=FALSE + Logon Hours + Délégations ACL
 
 Write-Host "Activation de la Corbeille AD pour la foret Belgique.lan..." -ForegroundColor Yellow
 
@@ -20,7 +20,7 @@ try {
 $CSVPath = "$env:USERPROFILE\Downloads\Employes-Liste6_ADAPTEE.csv"
 
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "IMPORT UTILISATEURS + CONFIG AD (SANS PSO/GROUPES)" -ForegroundColor Cyan
+Write-Host "IMPORT UTILISATEURS + CONFIG AD COMPLET" -ForegroundColor Cyan
 Write-Host "Domaine: Belgique.lan" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
@@ -102,19 +102,19 @@ function Remove-Accents {
     $Result = $Result.Replace('œ', 'oe')
     
     # Supprimer les espaces et caractères spéciaux
-    $Result = $Result -replace '\s+', ''  # Supprimer espaces
-    $Result = $Result -replace '[^a-zA-Z0-9._-]', ''  # Garder que alphanumériques, point, underscore, tiret
+    $Result = $Result -replace '\s+', ''
+    $Result = $Result -replace '[^a-zA-Z0-9._-]', ''
     
     return $Result
 }
 
 # --- [1] Lecture CSV ---
-Write-Host "`n[1/6] Lecture du CSV..." -ForegroundColor Yellow
+Write-Host "`n[1/7] Lecture du CSV..." -ForegroundColor Yellow
 $Users = Import-Csv -Path $CSVPath -Delimiter ";" -Encoding UTF8
 Write-Host "OK: $($Users.Count) utilisateurs a importer" -ForegroundColor Green
 
 # --- [2] Analyse Structure OUs ---
-Write-Host "`n[2/6] Analyse et Creation de la structure OUs..." -ForegroundColor Yellow
+Write-Host "`n[2/7] Analyse et Creation de la structure OUs..." -ForegroundColor Yellow
 
 $OUStructure = @{}
 $SingleOUs = @()
@@ -195,7 +195,7 @@ try {
 } catch { Write-Host "ERREUR OU Ordinateurs: $_" -ForegroundColor Red }
 
 # --- [3] Fonction generation mots de passe securises ---
-Write-Host "`n[3/6] Generation mots de passe aleatoires (20 chars)..." -ForegroundColor Yellow
+Write-Host "`n[3/7] Generation mots de passe aleatoires (20 chars)..." -ForegroundColor Yellow
 
 function Generate-SecurePassword {
     $Length = 20
@@ -207,13 +207,12 @@ function Generate-SecurePassword {
     foreach ($Byte in $RandomBytes) {
         $Password += $Chars[$Byte % $Chars.Length]
     }
-    # Garantir complexité : 1 majuscule + 1 minuscule + 1 chiffre + 1 spécial
     $Password = "A1!@" + $Password.Substring(0, 16)
     return $Password
 }
 
 # --- [4] Creation Users avec mots de passe aleatoires ---
-Write-Host "`n[4/6] Creation des utilisateurs..." -ForegroundColor Yellow
+Write-Host "`n[4/7] Creation des utilisateurs..." -ForegroundColor Yellow
 
 $UserCount = 0
 $ErrorCount = 0
@@ -227,12 +226,9 @@ foreach ($User in $Users) {
     $Bureau = $User.Bureau.Trim()
     $Fonction = if ($User.PSObject.Properties.Name -contains 'Fonction') { $User.Fonction.Trim() } else { $User.Description.Trim() }
     
-    # ════════════════════════════════════════════════════════════════════════
     # NORMALISATION DES ACCENTS - FORMAT PRENOM.NOM
-    # ════════════════════════════════════════════════════════════════════════
     $BaseName = (Remove-Accents -InputString "$Prenom.$Nom").ToLower()
     
-    # Limiter à 20 chars max (contrainte AD)
     if ($BaseName.Length -gt 20) { 
         $BaseName = $BaseName.Substring(0, 20) 
     }
@@ -260,7 +256,7 @@ foreach ($User in $Users) {
     $NewPassword = Generate-SecurePassword
     $SecurePassword = ConvertTo-SecureString $NewPassword -AsPlainText -Force
 
-    # Création utilisateur AD
+    # Création utilisateur AD - SANS ChangePasswordAtLogon
     try {
         $UserParams = @{
             SamAccountName = $SamName
@@ -272,16 +268,14 @@ foreach ($User in $Users) {
             AccountPassword = $SecurePassword
             Enabled = $true
             Path = $OUPath
-            ChangePasswordAtLogon = $true
+            ChangePasswordAtLogon = $false
             Confirm = $false
         }
         
-        # Ajouter description/fonction si disponible
         if ($Fonction) {
             $UserParams.Description = $Fonction
         }
         
-        # Ajouter bureau si disponible
         if ($Bureau) {
             $UserParams.Office = $Bureau
         }
@@ -289,7 +283,6 @@ foreach ($User in $Users) {
         New-ADUser @UserParams
         Write-Host "OK: User cree: $SamName (OU: $OUPath)" -ForegroundColor Green
         
-        # Ajouter au log des mots de passe
         $PasswordLog += [PSCustomObject]@{
             SamAccountName = $SamName
             DisplayName = "$Prenom $Nom"
@@ -306,22 +299,123 @@ foreach ($User in $Users) {
 
 Write-Host "Utilisateurs crees: $UserCount | Erreurs: $ErrorCount" -ForegroundColor Cyan
 
-# --- [5] Delegation des OUs (if needed) ---
-Write-Host "`n[5/6] Configuration delegation OUs..." -ForegroundColor Yellow
+# --- [5] Delegation des OUs et ACL ---
+Write-Host "`n[5/7] Configuration delegation administrative..." -ForegroundColor Yellow
 
-# Example: Delegation a un groupe de helpdesk (a adapter)
-# $DelegateGroup = "CN=Helpdesk,CN=Users,DC=Belgique,DC=lan"
-# foreach ($SubDept in $OUStructure.Values | ForEach-Object { $_ }) {
-#     $OUPath = "OU=$SubDept,..."
-#     # Grant-ADPermission -Identity $OUPath ...
-# }
+$DelegationMap = @{
+    "Commerciaux" = "yan.kowal"
+    "Technique" = "axel.irakoze"
+    "Informatique" = "adrien.ilic"
+    "Ressources humaines" = "romain.marcel"
+    "Direction" = "pol.kuntonda-luezi"
+    "R&D" = "antoine.brard"
+    "Marketting" = "maxime.gudin"
+    "Finances" = "benjamin.tollet"
+}
 
-Write-Host "Delegation: A faire manuellement si necessaire" -ForegroundColor Yellow
+$DelegCount = 0
+$PermCount = 0
+$PermFail = 0
 
-# --- [6] Export des mots de passe ---
-Write-Host "`n[6/6] Export des mots de passe..." -ForegroundColor Yellow
+foreach ($Dept in $DelegationMap.Keys) {
+    $ManagerID = $DelegationMap[$Dept]
+    $OUPath = "OU=${Dept},DC=Belgique,DC=lan"
+    
+    $Manager = Get-ADUser -Filter "SamAccountName -eq '${ManagerID}'" -Properties DisplayName, Title, SID -ErrorAction SilentlyContinue
+    
+    if ($Manager) {
+        Write-Host "Delegation $Dept ->" -NoNewline
+        Write-Host " $($Manager.DisplayName) ($ManagerID)" -ForegroundColor Green
+        $DelegCount++
+        
+        # Appliquer les permissions ACL
+        try {
+            $OU = Get-ADOrganizationalUnit -Filter "distinguishedName -eq '${OUPath}'" -ErrorAction SilentlyContinue
+            
+            if ($OU) {
+                $ACL = Get-Acl -Path "AD:\$($OU.DistinguishedName)"
+                $UserSID = $Manager.SID
+                
+                # Permission 1: Reset Password (GUID: 00299570-246d-11d0-a768-00aa006e0529)
+                $ResetPasswordGUID = [GUID]"00299570-246d-11d0-a768-00aa006e0529"
+                $ACE_Reset = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                    $UserSID,
+                    [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight,
+                    [System.Security.AccessControl.AccessControlType]::Allow,
+                    $ResetPasswordGUID,
+                    [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
+                )
+                
+                # Permission 2: Modify All Properties
+                $ACE_Write = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                    $UserSID,
+                    [System.DirectoryServices.ActiveDirectoryRights]::WriteProperty,
+                    [System.Security.AccessControl.AccessControlType]::Allow,
+                    [System.DirectoryServices.ActiveDirectorySecurityInheritance]::All
+                )
+                
+                $ACL.AddAccessRule($ACE_Reset)
+                $ACL.AddAccessRule($ACE_Write)
+                
+                Set-Acl -Path "AD:\$($OU.DistinguishedName)" -AclObject $ACL
+                
+                Write-Host "  ✓ ACL appliquee: ${ManagerID} -> ${Dept}" -ForegroundColor Green
+                $PermCount++
+            }
+        } catch {
+            Write-Host "  ✗ ERREUR ACL ${ManagerID}: $_" -ForegroundColor Red
+            $PermFail++
+        }
+    } else {
+        Write-Host "Delegation $Dept ->" -NoNewline
+        Write-Host " ERREUR (User introuvable)" -ForegroundColor Red
+        $PermFail++
+    }
+}
 
-$OutputPath = "$env:USERPROFILE\Downloads\Passwords_Export_$(Get-Date -Format 'yyyy-MM-dd_HHmmss').csv"
+# --- [6] Application des horaires (Logon Hours) ---
+Write-Host "`n[6/7] Application des horaires de connexion..." -ForegroundColor Yellow
+
+$StdApplied = 0
+$ITApplied = 0
+$HoursFailed = 0
+
+$ITDepts = @("HotLine", "Systemes", "Developpement", "Systèmes", "Développement")
+
+$AllUsers = Get-ADUser -Filter "Enabled -eq `$true" -SearchBase "DC=Belgique,DC=lan" -Properties DistinguishedName | `
+    Where-Object { $_.SamAccountName -notmatch "^(Administrator|Guest|krbtgt)" }
+
+foreach ($User in $AllUsers) {
+    $SamName = $User.SamAccountName
+    $DN = $User.DistinguishedName
+    $IsIT = $false
+    
+    if ($DN -match "OU=([^,]+),OU=") {
+        $SubDept = $Matches[1]
+        if ($ITDepts -contains $SubDept) { $IsIT = $true }
+    }
+
+    if ($IsIT) {
+        $Cmd = "net user $SamName /times:all"
+        Invoke-Expression $Cmd 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { 
+            Write-Host "OK: $SamName -> IT (24h)" -ForegroundColor Cyan
+            $ITApplied++ 
+        } else { $HoursFailed++ }
+    } else {
+        $Cmd = "net user $SamName /times:M-F,6am-6pm"
+        Invoke-Expression $Cmd 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { 
+            Write-Host "OK: $SamName -> STD (M-F 6-18h)" -ForegroundColor Green
+            $StdApplied++ 
+        } else { $HoursFailed++ }
+    }
+}
+
+# --- [7] Export des mots de passe ---
+Write-Host "`n[7/7] Export des mots de passe..." -ForegroundColor Yellow
+
+$OutputPath = "$env:USERPROFILE\Desktop\Passwords_Export_$(Get-Date -Format 'yyyy-MM-dd_HHmmss').csv"
 $PasswordLog | Export-Csv -Path $OutputPath -Delimiter ";" -Encoding UTF8 -NoTypeInformation
 Write-Host "OK: Mots de passe exportes: $OutputPath" -ForegroundColor Green
 
@@ -335,11 +429,19 @@ Write-Host "══════════════════════�
 Write-Host "`nResume:" -ForegroundColor Cyan
 Write-Host "- OUs creees: $($OUStructure.Count) categories + $($SingleOUs.Count) simples" -ForegroundColor Green
 Write-Host "- Utilisateurs crees: $UserCount" -ForegroundColor Green
-Write-Host "- Erreurs: $ErrorCount" -ForegroundColor Yellow
+Write-Host "- Erreurs users: $ErrorCount" -ForegroundColor Yellow
+Write-Host "- Delegations configurees: $DelegCount" -ForegroundColor Green
+Write-Host "- Permissions ACL appliquees: $PermCount" -ForegroundColor Green
+Write-Host "- Erreurs ACL: $PermFail" -ForegroundColor Yellow
+Write-Host "- Horaires appliques (STD): $StdApplied" -ForegroundColor Green
+Write-Host "- Horaires appliques (IT): $ITApplied" -ForegroundColor Cyan
+Write-Host "- Erreurs horaires: $HoursFailed" -ForegroundColor Yellow
 Write-Host "- Mots de passe: $OutputPath" -ForegroundColor Green
-Write-Host "`nNormalisation des accents:" -ForegroundColor Cyan
-Write-Host "- François -> francois" -ForegroundColor Green
-Write-Host "- Émilie -> emilie" -ForegroundColor Green
-Write-Host "- Çédric -> cedric" -ForegroundColor Green
-Write-Host "- Spaces/Tirets geres automatiquement" -ForegroundColor Green
+Write-Host "`n⚠️  IMPORTANT:" -ForegroundColor Yellow
+Write-Host "  ✓ ChangePasswordAtLogon = FALSE (pas de changement force)" -ForegroundColor Green
+Write-Host "  ✓ Delegations ACL appliquees par departement" -ForegroundColor Green
+Write-Host "  ✓ Logon Hours configurees (IT 24h / STD M-F 6-18h)" -ForegroundColor Green
+Write-Host "  ✓ Normalisation des accents activee" -ForegroundColor Green
+Write-Host "  ⚠  Mots de passe: A DISTRIBUER par mail chiffre UNIQUEMENT" -ForegroundColor Red
+Write-Host "  ⚠  A SUPPRIMER apres distribution" -ForegroundColor Red
 Write-Host "════════════════════════════════════════" -ForegroundColor Green
