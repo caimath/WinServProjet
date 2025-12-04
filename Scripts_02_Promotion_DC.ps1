@@ -81,7 +81,7 @@ $DomainName = "Belgique.lan"
 $SourceDC = "172.28.60.21"
 $SourceDCFQDN = "DC-BRUXELLE.Belgique.lan"
 $SiteName = "NAMUR"
-$DSRMPassword = ConvertTo-SecureString "P@ssword2025!DSRM" -AsPlainText -Force
+$DSRMPassword = ConvertTo-SecureString "Test123!" -AsPlainText -Force
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "PROMOTION DC REPLICA - NAMUR" -ForegroundColor Cyan
